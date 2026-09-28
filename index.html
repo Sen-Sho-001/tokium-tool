@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TOKIUM登録状況管理</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.39.0/lib/msal-browser.min.js"></script>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#fff; --ink:#1f2328; --sub:#5b6470; --line:#d9dde3; --head:#eef1f5;
+  --accent:#2463c7; --accent-ink:#fff;
+  --st-none:#9aa3ad; --st-todo:#c8410b; --st-check:#b58100; --st-done-tmp:#2463c7; --st-done:#1a7f37; --st-rec:#5f7f2a; --st-ex:#8a8f96;
+}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.5 "Yu Gothic UI","Meiryo",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:#1f3b63;color:#fff;padding:10px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{font-size:16px;margin:0;font-weight:600}
+header .ver{opacity:.7;font-size:11px}
+header .mode{margin-left:auto;font-size:11px;background:#ffffff22;padding:2px 8px;border-radius:10px}
+main{padding:12px 16px;max-width:1600px;margin:0 auto}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:10px}
+.loaders{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px}
+.ld{border:1px dashed var(--line);border-radius:6px;padding:8px 10px}
+.ld b{display:block;font-size:12px}
+.ld .st{font-size:11px;color:var(--sub);margin-top:3px;word-break:break-all}
+.ld .st.ok{color:var(--st-done)}
+.ld .st.err{color:var(--st-todo)}
+button,.btn{font:inherit;border:1px solid var(--line);background:#fff;border-radius:4px;padding:3px 10px;cursor:pointer;color:var(--ink)}
+button:hover{background:var(--head)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.primary:disabled{opacity:.45;cursor:default}
+button.small{padding:1px 6px;font-size:11px}
+input[type=text],select{font:inherit;border:1px solid var(--line);border-radius:4px;padding:3px 6px;background:#fff}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line);border-radius:14px;padding:2px 10px;cursor:pointer;background:#fff;display:flex;gap:6px;align-items:center}
+.chip.on{outline:2px solid var(--accent)}
+.chip .n{font-weight:700}
+.badge{display:inline-block;border-radius:3px;padding:0 6px;font-size:11px;color:#fff;white-space:nowrap}
+.b-未登録{background:var(--st-todo)}
+.b-要確認{background:var(--st-check)}
+.b-登録済（未確定）{background:var(--st-done-tmp)}
+.b-確定済{background:var(--st-done)}
+.b-TOKIUM記録あり{background:var(--st-rec)}
+.b-PDFなし{background:#7a5ea8}
+.b-未確認{background:#9a6a2f}
+.b-対象外{background:var(--st-ex)}
+.b-なし{background:transparent;color:var(--st-none);border:1px solid var(--line)}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.tab{padding:6px 14px;cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:5px 5px 0 0;color:var(--sub)}
+.tab.on{background:var(--panel);border-color:var(--line);color:var(--ink);font-weight:600;margin-bottom:-1px}
+.tab .cnt{font-size:11px;background:var(--head);border-radius:8px;padding:0 6px;margin-left:4px}
+table{border-collapse:collapse;width:100%;background:#fff}
+th,td{border:1px solid var(--line);padding:3px 6px;vertical-align:top}
+th{background:var(--head);font-weight:600;position:sticky;top:0;z-index:1;text-align:left;white-space:nowrap}
+.tbl-wrap{max-height:calc(100vh - 330px);min-height:300px;overflow:auto;border:1px solid var(--line)}
+td.doc{cursor:pointer;white-space:nowrap}
+td.doc:hover{background:#f0f5ff}
+td.num{text-align:right;white-space:nowrap}
+/* 案件一覧：横スクロールなしで収める（固定幅＋得意先・品名は省略表示） */
+#tblCases{table-layout:fixed}
+#tblCases td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tblCases td.cp div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tblCases th.st,#tblCases td.doc{text-align:center;padding:3px 2px}
+/* 書類の状態マーク（4種を横並びで一目で） */
+.mk{display:inline-block;min-width:64px;border-radius:4px;padding:1px 4px;font-size:11px;font-weight:600;line-height:18px;color:#fff;white-space:nowrap}
+.mk.s-TOKIUM記録あり{background:var(--st-rec)}
+.mk.s-確定済{background:var(--st-done)}
+.mk.s-登録済（未確定）{background:var(--st-done-tmp)}
+.mk.s-未登録{background:var(--st-todo)}
+.mk.s-未確認{background:#9a6a2f}
+.mk.s-要確認{background:var(--st-check)}
+.mk.s-PDFなし{background:#7a5ea8}
+.mk.s-なし{background:transparent;color:var(--st-none);font-weight:400}
+.mk.s-POリンクなし{background:#fff;color:#b35900;border:1px solid #e0a060}
+td.doc .sub.warn{color:#b35900}
+td.doc .sub.ok{color:var(--st-done)}
+.mk.s-不要{background:#eef0f3;color:#8a8f96;font-weight:400}
+.mk.s-納品前{background:transparent;color:var(--st-none);border:1px dashed var(--line);font-weight:400}
+td.doc .sub{font-size:10px;color:var(--sub);line-height:1.2}
+.muted{color:var(--sub)}
+.small{font-size:11px}
+.actionbar{position:sticky;bottom:0;background:#fffbe8;border:1px solid #e8d98a;border-radius:6px;padding:8px 12px;margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#drawer{position:fixed;top:0;right:0;width:min(640px,100vw);height:100vh;background:#fff;border-left:1px solid var(--line);box-shadow:-6px 0 16px #0002;transform:translateX(105%);transition:transform .15s;z-index:10;display:flex;flex-direction:column}
+#drawer.open{transform:none}
+#drawer .hd{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+#drawer .bd{padding:10px 14px;overflow:auto;flex:1}
+dl.kv{display:grid;grid-template-columns:110px 1fr;gap:2px 10px;margin:0 0 10px}
+dl.kv dt{color:var(--sub)}
+dl.kv dd{margin:0;word-break:break-all}
+.docitem{border:1px solid var(--line);border-radius:5px;padding:6px 8px;margin:4px 0}
+.docitem .nm{word-break:break-all}
+#loadBox>summary{cursor:pointer;list-style:none;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#loadBox>summary::-webkit-details-marker{display:none}
+#loadBox>summary::before{content:'▼';font-size:10px;color:var(--sub)}
+#loadBox:not([open])>summary::before{content:'▶'}
+#loadBox[open] .loadHint{display:none}
+.tkTbl{border-collapse:collapse;width:100%;margin:2px 0 4px}
+.tkTbl th{width:64px;background:none;position:static;border:none;border-bottom:1px solid var(--line);vertical-align:top;padding:4px 4px}
+.tkTbl td{border:none;border-bottom:1px solid var(--line);padding:4px 4px}
+.tkRef{margin-top:4px;padding:3px 6px;background:#fff8e6;border-radius:4px}
+h3{font-size:13px;margin:12px 0 4px;border-left:3px solid var(--accent);padding-left:6px}
+textarea{width:100%;font:12px/1.4 Consolas,"MS Gothic",monospace;border:1px solid var(--line);border-radius:4px;padding:6px}
+.warn{background:#fff4e5;border:1px solid #f0c27a;border-radius:5px;padding:6px 10px;margin:6px 0}
+.okmsg{background:#e9f7ee;border:1px solid #9fd3ad;border-radius:5px;padding:6px 10px;margin:6px 0}
+details summary{cursor:pointer}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <h1>TOKIUM登録状況管理</h1><span class="ver">MVP v0.2（GitHub版）</span>
+  <span class="mode" id="modeLbl">SharePoint：未接続</span>
+</header>
+<main>
+
+<!-- ===== 読み込み ===== -->
+<details class="panel" id="loadBox" open>
+  <summary id="loadSum"><b>データの読み込み</b><span id="loadSumText" class="small muted"></span><span class="small muted loadHint">（クリックで開閉）</span></summary>
+  <div style="margin-top:8px">
+  <div class="ld" style="margin-bottom:8px;border-style:solid;border-color:#9db8e3;background:#f5f9ff">
+    <div class="row">
+      <b style="display:inline">SharePoint（Graph API）</b>
+      <button class="primary" id="btnSignIn">サインイン</button>
+      <span id="gsWho" class="small muted"></span>
+      <span style="margin-left:12px">対象年</span><span id="gsYears" class="row"></span>
+      <button class="primary" id="btnScan" disabled>DB30と書類一覧を読み込む</button>
+      <span id="gsProg" class="small"></span>
+    </div>
+    <div class="st" id="stGraph">サインインすると、SharePoint上のDB30（最新のBK）と、経理(自社発行)・経理(相手方受領)の書類一覧を自動で読み込みます。</div>
+  </div>
+  <div class="ld" style="margin-bottom:8px">
+    <div class="row"><b style="display:inline">TOKIUMの登録済み一覧（国税関係書類詳細CSV）</b>
+      <input type="file" id="fTk" accept=".csv"><span class="small muted">TOKIUMの書類一覧からCSV出力したもの。SharePointの「ドキュメント」に置けばサインイン時に自動で読みます</span></div>
+    <div class="st" id="stTk">未読込（読み込むまでは、見積書・納品書は「未確認」になります）</div>
+  </div>
+  <details id="manualBox"><summary class="small muted">手動読み込み・テスト用（DB30 CSV／ローカルフォルダ／共有リンク対応表）</summary>
+  <div class="loaders" style="margin-top:6px">
+    <div class="ld">
+      <b>① DB30（売上管理）CSV</b>
+      <input type="file" id="fDb30" accept=".csv">
+      <div class="st" id="stDb30">未読込（Shift-JIS / UTF-8 自動判定）</div>
+    </div>
+    <div class="ld">
+      <b>② ローカルの書類フォルダ（20XX年_経理(自社発行)／(相手方受領)）</b>
+      <div class="row"><input type="file" id="fDir" webkitdirectory multiple><button class="small" id="btnClearDir">クリア</button></div>
+      <div class="st" id="stDir">未読込（年フォルダごとに複数回追加できます）</div>
+    </div>
+    <div class="ld">
+      <b>③ 処理ログCSV</b>
+      <div class="row"><input type="file" id="fLog" accept=".csv"><button class="small" id="btnSaveLog">ログを保存</button></div>
+      <div class="st" id="stLog">未読込</div>
+    </div>
+    <div class="ld">
+      <b>検証用：共有リンク対応表（shares API の代用）</b>
+      <input type="file" id="fShare" accept=".json">
+      <div class="st" id="stShare">未読込（Graph API 接続後は不要）</div>
+    </div>
+  </div>
+  </details>
+  <div class="row" style="margin-top:8px">
+    <label>担当者名 <input type="text" id="userName" size="10" placeholder="例：山田"></label>
+    <label>書類フォルダの親の実パス（指示文用）
+      <input type="text" id="rootPath" size="60" placeholder="例：C:\Users\（自分のユーザー名）\OneDrive - 株式会社ウォルツ"></label>
+    <span class="muted small">CSVはページへのドラッグ＆ドロップでも読み込めます</span>
+  </div>
+  </div>
+</details>
+
+<!-- ===== 集計＋絞り込み ===== -->
+<section class="panel">
+  <div class="chips" id="chips"></div>
+  <div class="row" style="margin-top:8px">
+    <label>年 <select id="flYear"></select></label>
+    <label>担当者 <select id="flUser"></select></label>
+    <label>書類 <select id="flType"><option value="">すべて</option><option>見積書</option><option>注文書</option><option>納品書</option><option>請求書</option></select></label>
+    <label>状態 <select id="flStatus"></select></label>
+    <label>顧客 <input type="text" id="flCust" list="custList" size="26" placeholder="入力すると候補を表示（部分一致）" autocomplete="off"></label>
+    <datalist id="custList"></datalist>
+    <button class="small" id="btnCustClear" title="顧客の条件を消す">×</button>
+    <label>D番号/見積No <input type="text" id="flNo" size="10"></label>
+    <label><input type="checkbox" id="flHasDoc" checked> 書類があるD番号のみ</label>
+    <button class="small" id="btnReset">条件クリア</button>
+  </div>
+</section>
+
+<div class="tabs" id="tabs">
+  <div class="tab on" data-tab="list">案件一覧<span class="cnt" id="cntList">0</span></div>
+  <div class="tab" data-tab="unmatched">未紐づけ・要確認ファイル<span class="cnt" id="cntUnm">0</span></div>
+  <div class="tab" data-tab="excluded">対象外<span class="cnt" id="cntEx">0</span></div>
+  <div class="tab" data-tab="import">結果の取り込み</div>
+  <div class="tab" data-tab="log">処理ログ<span class="cnt" id="cntLog">0</span></div>
+</div>
+
+<section id="pane-list">
+  <div class="tbl-wrap"><table id="tblCases"><thead><tr>
+    <th style="width:28px"><input type="checkbox" id="chkAllVisible" title="表示中の未登録をすべて選択"></th>
+    <th style="width:84px">D番号<br><span class="small muted">見積No</span></th>
+    <th>得意先<br><span class="small muted">品名</span></th>
+    <th style="width:88px;text-align:right">金額(税抜)</th>
+    <th style="width:92px">納品日<br><span class="small muted">登録者</span></th>
+    <th class="st" style="width:82px">見積書</th><th class="st" style="width:82px">注文書</th><th class="st" style="width:82px">納品書</th><th class="st" style="width:82px">請求書</th>
+  </tr></thead><tbody></tbody></table></div>
+  <div class="muted small" id="listNote"></div>
+</section>
+
+<section id="pane-unmatched" class="hidden">
+  <div class="muted small" style="margin-bottom:6px">登録対象の書類のうち、案件（D番号）に紐づけられなかったもの。顧客POは候補から選ぶか、Claudeに見積Noを読み取らせて特定します。</div>
+  <div class="tbl-wrap"><table id="tblUnm"><thead><tr>
+    <th style="width:28px"></th><th>書類</th><th>理由</th><th>顧客フォルダ</th><th>ファイル</th><th>紐づけ</th>
+  </tr></thead><tbody></tbody></table></div>
+</section>
+
+<section id="pane-excluded" class="hidden">
+  <div id="exSummary" class="row" style="margin-bottom:6px"></div>
+  <div class="tbl-wrap"><table id="tblEx"><thead><tr><th>理由</th><th>年</th><th>顧客フォルダ</th><th>サブフォルダ</th><th>ファイル</th></tr></thead><tbody></tbody></table></div>
+</section>
+
+<section id="pane-import" class="hidden panel">
+  <div class="muted small">Claude in Chrome の最後の出力（<code>RESULT,…</code> の行）をそのまま貼り付けてください。前後の文章が混ざっていても RESULT 行だけを読みます。</div>
+  <textarea id="taImport" rows="8" placeholder="RESULT,納品書,D1234,,20260911_〇〇….pdf,〇〇株式会社,2026/09/11,720000,登録済,"></textarea>
+  <div class="row" style="margin-top:6px"><button id="btnParse">プレビュー</button><button class="primary" id="btnApply" disabled>処理ログに反映</button><span id="impMsg" class="small"></span></div>
+  <div id="impPreview" style="margin-top:8px"></div>
+</section>
+
+<section id="pane-log" class="hidden">
+  <div class="row" style="margin-bottom:6px"><span class="muted small" id="logNote"></span></div>
+  <div class="tbl-wrap"><table id="tblLog"><thead><tr><th>日時</th><th>担当</th><th>書類</th><th>D番号</th><th>見積No</th><th>状態</th><th>方法</th><th>ファイル</th><th>備考</th></tr></thead><tbody></tbody></table></div>
+</section>
+
+<div class="actionbar">
+  <b>選択中 <span id="selCount">0</span> 件</b>
+  <button class="primary" id="btnCopy" disabled>Claudeへの指示文をコピー ＆ TOKIUMを開く</button>
+  <button id="btnCopyOnly" disabled>指示文をコピーのみ</button>
+  <button id="btnSelClear">選択解除</button>
+  <span id="copyMsg" class="small"></span>
+  <span id="unsaved" class="small" style="margin-left:auto;color:var(--st-todo)"></span>
+</div>
+
+</main>
+
+<aside id="drawer"><div class="hd"><b id="dwTitle"></b><button style="margin-left:auto" id="dwClose">閉じる</button></div><div class="bd" id="dwBody"></div></aside>
+
+<script>
+/* =====================================================================
+   設定（実データのサンプル確認に合わせて調整する値はすべてここ）
+   ===================================================================== */
+const CONFIG = {
+  // 対象年（DB30は納品日/検収日の年、書類は年フォルダの年で判定）
+  // 2024年から（2023年以前は対象外：2026-09 決定）。翌年分まで自動で含める（納品日が来年の受注に対応）
+  targetYears: Array.from({ length: new Date().getFullYear() + 2 - 2024 }, (_, i) => 2024 + i),
+  // 年フォルダの判定（表記ゆれ対応。OneDrive同期名「株式会社ウォルツ - 2026年_経理(自社発行)」にも一致）
+  yearFolderRe: /(20\d{2})年_経理/,
+  // 顧客PO（注文書）の保存場所 ※場所は未確定。仮に「顧客注文書」フォルダとする
+  customerPoFolderRe: /^顧客注文書$/,            // テスト用の疑似フォルダ
+  receivedFolderRe: /相手方受領/,                // 年フォルダ名にこれを含む＝顧客から受領した書類
+  receivedPoSubRe: /注文書/,                     // 相手方受領のうち、登録対象にするサブフォルダ
+  graph: {
+    clientId: '272b623a-4288-4793-a93f-89ed0deaa710',
+    tenantId: 'c0496682-4f81-4b60-9e07-b53a4eb48641',
+    sitePath: 'waltsjp.sharepoint.com:/sites/msteams_ba5416',
+    driveName: 'ドキュメント',
+    baseFolder: '本社',                          // 年フォルダが並んでいるフォルダ
+    db30Search: 'db30_仕入販売管理BK',
+    db30Folder: '本社/バックアップ/サイボウズオフィスバックアップ/見積・発注・仕入販売BK(毎週_月曜日更新)',  // 「ドキュメント」ライブラリ内のパス（毎週月曜に更新）
+    db30NameRe: /^db30_仕入販売管理BK_(\d{8})\.csv$/i,
+    tokiumSearch: '国税関係書類詳細',
+    tokiumFolder: 'Claude_code_tools/TOKIUMツール',  // TOKIUMのCSV（国税関係書類詳細_YYYYMMDD.csv）を置く場所（「ドキュメント」内）。無ければ検索で探す
+    tokiumNameRe: /^国税関係書類詳細_(\d{8})\.csv$/i,
+    scopes: ['Files.Read.All', 'Sites.Read.All'],
+    // 取引先ごとのルール（notRequired／customerIssued）をSharePointのJSONから読む場合のパス（「ドキュメント」内）。
+    // 空なら、このファイルに書いたルールを使う（GitHub公開版は取引先名を載せないため、ここを指定して読む）
+    rulesPath: "Claude_code_tools/TOKIUMツール/tokium_rules.json",
+    // サインイン後の戻り先：'origin'＝http://localhost:8766 のようにサイトの先頭／'page'＝このページ自身のURL（GitHub Pages用）
+    redirect: 'page',
+  },
+  // 顧客フォルダ直下のサブフォルダ → 書類種別（上から順に判定。type:null は対象外）
+  folderRules: [
+    { re: /控え/,              type: null, reason: '控え' },
+    { re: /送り状/,            type: null, reason: '送り状' },
+    { re: /受領書|検収確認書/,  type: null, reason: '受領書' },
+    { re: /注文書|注文請書/,    type: null, reason: '当社発行の注文書（外注向け・仕入側）' },
+    { re: /見積/,              type: '見積書' },
+    { re: /納品書/,            type: '納品書' },
+    { re: /請求書|INVOICE/i,   type: '請求書' },
+  ],
+  // ファイル名からの番号抽出
+  dNumberRe: /(?:^|[_\s@】#])D(\d{4})R?(?=[-_.\s]|$)/g,     // 例 _D9412-2026090702_ / _D9208R-… / _D7929.pdf
+  quoteNoRe: /(?:^|[_\s])M(\d{4,5})(?:-\d+)?(?!\d)/,         // 例 _M13584_ / M13352Ｗ260714.pdf / _M12741IPHBM…
+  // DB30の列名
+  db30: {
+    d: '新 DNo.', quote: '見積No', customer: '得意先名', item: '品名',
+    amount: '売上金額(税抜)', amountTax: '売上金額(税込）', deliveryDate: '納品日', salesDate: '検収日(売上)',
+    user: '登録者', po: 'PO', invoiceLink: '納品書・請求書', endUser: 'エンドユーザ', contact: '部署、担当者等',
+    custNo: '得意先№',
+  },
+  // DB30「納品書・請求書」列にTOKIUMのURL(secure.keihi.com)があれば、請求書は登録済とみなす
+  tokiumLinkRe: /secure\.keihi\.com/,
+  useDb30TokiumLink: true,
+  pdfExt: /\.pdf$/i,
+  docExt: /\.(pdf|xlsx|xls)$/i,
+  tokiumUrl: 'https://secure.keihi.com/',
+  // TOKIUMの国税関係書類の一覧ページ。検索語をURLに入れられる場合は {q} の形で書く（例：…?keyword={q}）。
+  // {q} が無い場合は、D番号をクリップボードにコピーしてから一覧ページを開く
+  tokiumSearchUrl: 'https://secure.keihi.com/payment_requests/national_tax_documents',
+  // 書類が不要な取引先（DB30の得意先名で判定）。ここに書いた書類は「不要」と表示し、登録対象から外す
+  notRequired: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
+  // 相手方が発行する書類：この取引先は「●相手」の登録があれば登録済とする（取引先コードの一致は問わない）
+  //   例：納品書を相手方（顧客）が発行する取引先（2026-09 確認）
+  customerIssued: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
+  // TOKIUMの書類種別 → このツールの書類種別（●相手＝受領、自己＝当社発行）。メモ欄の D番号 で案件に紐づける
+  // needCustomer：●相手の納品書・請求書・見積書は、ほとんどが仕入先（外注）の書類なので数えない。
+  //   例外は customerIssued の取引先だけ（2026-09 決定）。取引先コード＝得意先№のものは詳細画面に「参考」で出す
+  tokiumTypes: [
+    { re: /^見積書_自己/, type: '見積書' },
+    { re: /^見積書_●相手/, type: '見積書', needCustomer: true },
+    { re: /^注文書_(●相手|自己)/, type: '注文書' },
+    { re: /^納品書_自己/, type: '納品書' },
+    { re: /^納品書_●相手/, type: '納品書', needCustomer: true },
+    { re: /^請求書_自己/, type: '請求書' },
+    { re: /^請求書_●相手/, type: '請求書', needCustomer: true },
+  ],
+  logColumns: ['logged_at','user','doc_type','d_number','quote_no','file_name','drive_item_id','match_method','partner','doc_date','amount','status','note'],
+};
+const DOC_TYPES = ['見積書','注文書','納品書','請求書'];
+const STATUS_ORDER = ['要確認','未登録','PDFなし','登録済（未確定）','TOKIUM記録あり','確定済'];  // 左ほど「要対応」
+const SELECTABLE = new Set(['未登録','未確認','要確認']);
+const selectable = d => SELECTABLE.has(d.status) && !d.reverseRef;  // 反対種別で登録済みの書類はClaudeに送らない
+/* 未登録＝未登録だと分かっている（DB30のPO列がまだSharePointリンク）／未確認＝TOKIUMを見ないと分からない（見積書・納品書など） */
+
+/* ===================================================================== */
+const S = {
+  db30Rows: [], db30Name: '',
+  rawFiles: new Map(),       // id → {file, rel}
+  shareMap: {},              // 共有URL → ファイルID
+  log: [], logDirty: false,
+  cases: new Map(),          // D → case
+  quoteIndex: new Map(),     // M番号 → [D]
+  docs: [],                  // 登録対象の書類（紐づけ済/未紐づけ）
+  excluded: [],
+  selected: new Set(),       // doc.id
+  filterStatus: '',
+  lastParsed: [],
+};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtYen = v => { const n = Number(String(v).replace(/[^\d.-]/g,'')); return v === '' || isNaN(n) ? '' : n.toLocaleString('ja-JP'); };
+const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
+/* ---------- CSV ---------- */
+function decodeCSV(buf) {
+  const u8 = new Uint8Array(buf);
+  if (u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) return new TextDecoder('utf-8').decode(u8.subarray(3));
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(u8); }
+  catch { return new TextDecoder('shift_jis').decode(u8); }
+}
+function parseCSV(text) {
+  const rows = []; let row = [], f = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i+1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(f); f = ''; }
+    else if (c === '\n') { row.push(f); rows.push(row); row = []; f = ''; }
+    else if (c !== '\r') f += c;
+  }
+  if (f !== '' || row.length) { row.push(f); rows.push(row); }
+  return rows;
+}
+function toObjects(rows) {
+  const h = rows[0].map(s => s.trim());
+  return { headers: h, data: rows.slice(1).filter(r => r.some(v => v !== '')).map(r => Object.fromEntries(h.map((k, i) => [k, (r[i] ?? '').trim()]))) };
+}
+const csvCell = v => /[",\n\r]/.test(v = String(v ?? '')) ? '"' + v.replace(/"/g, '""') + '"' : v;
+
+/* ---------- 読み込み ---------- */
+async function loadCsvFile(file) {
+  const { headers, data } = toObjects(parseCSV(decodeCSV(await file.arrayBuffer())));
+  if (headers.includes(CONFIG.db30.d)) {
+    setDb30(headers, data, `手動読込 ${file.name}`);
+  } else if (headers.includes('書類種別') && headers.includes('書類URL')) {
+    setTokium(data, file.name);
+  } else if (headers.includes('drive_item_id')) {
+    S.log = data; S.logDirty = false;
+    $('#stLog').className = 'st ok'; $('#stLog').textContent = `${file.name}：${data.length}行`;
+    persistLog();
+  } else {
+    alert(`${file.name} はDB30でも処理ログでもないようです（ヘッダーに「${CONFIG.db30.d}」または「drive_item_id」がありません）`);
+    return;
+  }
+  rebuild();
+}
+/* TOKIUMのCSV → {D番号: {書類種別: [{url,date,amount,memo}]}}。ブラウザにも保存（次回起動時に復元） */
+const nfkc = s => String(s || '').normalize('NFKC').trim();
+const tkUrl = x => 'https://secure.keihi.com/payment_requests/national_tax_documents/' + x.id;
+const tkId = u => (String(u || '').match(/national_tax_documents\/([0-9a-f-]{36})/i) || [])[1] || '';
+/* DB30のリンク欄のTOKIUM URLが、TOKIUMで何の書類種別か（一覧に無ければ ''） */
+const tkKindOf = raw => { const id = tkId(String(raw || '').split(',')[0]); return id && S.tokium?.kindByUrl ? (S.tokium.kindByUrl[id] ?? '') : ''; };
+/* DB30のTOKIUM URLを、その書類種別の登録の証拠として使えるか（2026-09 方針：TOKIUMのCSVを優先）。
+   TOKIUMのCSVを読んでいれば、URLの先がCSVにあり、かつ正しい種別のときだけ使う（DB30のリンクは納品書・請求書が混在するため）。
+   CSVを読んでいないときだけ、DB30のURLをそのまま使う */
+const db30LinkCounts = (raw, re) => { if (!S.tokium?.kindByUrl) return true; const k = tkKindOf(raw); return !!k && re.test(k); };
+const db30UrlNotInCsv = raw => !!S.tokium?.kindByUrl && CONFIG.tokiumLinkRe.test(String(raw || '').split(',')[0]) && !tkKindOf(raw);
+const coName = s => nfkc(s).replace(/株式会社|\(株\)|（株）|\s/g, '');
+/* 案件dの書類種別tについて、TOKIUMの登録を返す（●相手の書類は顧客のものだけ） */
+function tkList(d, t) {
+  const list = S.tokium?.idx[d]?.[t] || []; if (!list.length) return list;
+  const r = S.cases.get(d)?.row; if (!r) return list.filter(x => !x.needCustomer);
+  const no = nfkc(r[CONFIG.db30.custNo]), nm = coName(r[CONFIG.db30.customer]);
+  const issued = CONFIG.customerIssued.some(x => x.types.includes(t) && x.customer.test(r[CONFIG.db30.customer] || ''));
+  return list.filter(x => !x.needCustomer || issued);
+}
+/* 参考：●相手で登録されていて、取引先コードが得意先№と一致するもの（登録済みとしては数えない。詳細画面で見せるだけ） */
+function tkRef(d, t) {
+  const r = S.cases.get(d)?.row; if (!r) return [];
+  const counted = tkList(d, t), no = nfkc(r[CONFIG.db30.custNo]), nm = coName(r[CONFIG.db30.customer]);
+  return (S.tokium?.idx[d]?.[t] || []).filter(x => x.needCustomer && !counted.includes(x) && (x.code ? x.code === no : coName(x.partner) === nm));
+}
+function setTokium(data, label) {
+  const idx = {}; let used = 0;
+  const kindByUrl = {};  // TOKIUMの書類URL末尾のID → 書類種別（DB30のリンクが何の書類を指しているか調べる用）
+  for (const r of data) {
+    const uid = tkId(r['書類URL']); if (uid) kindByUrl[uid] = r['書類種別'] || '';
+    const tt = CONFIG.tokiumTypes.find(x => x.re.test(r['書類種別'] || '')); if (!tt) continue;
+    const t = tt.type;
+    const ds = [...new Set([...(r['メモ'] || '').matchAll(/D(\d{4})(?!\d)/g)].map(m => 'D' + m[1]))];
+    const ent = { id: tkId(r['書類URL']), date: r['取引日'], amount: r['取引金額'], memo: r['メモ'], kind: r['書類種別'] };
+    if (tt.needCustomer) Object.assign(ent, { partner: r['取引先名'], code: nfkc(r['取引先コード']), needCustomer: true });
+    for (const d of ds) ((idx[d] ||= {})[t] ||= []).push(ent);
+    if (ds.length) used++;
+  }
+  const m = label.match(/(\d{8})/);
+  S.tokium = { v: 4, idx, kindByUrl, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '' , rows: data.length, used };
+  $('#stTk').className = 'st ok';
+  $('#stTk').textContent = `${label}：${data.length.toLocaleString()}件（うち案件に紐づく ${used.toLocaleString()}件）${S.tokium.date ? `／${S.tokium.date}時点` : ''}`;
+  try { localStorage.setItem('tokium_export_idx', JSON.stringify(S.tokium)); } catch { $('#stTk').textContent += '（ブラウザへの保存は容量不足でできませんでした。次回も読み込みが必要です）'; }
+}
+$('#fTk').onchange = e => e.target.files[0] && loadCsvFile(e.target.files[0]);
+function setDb30(headers, data, label) {
+  const miss = Object.values(CONFIG.db30).filter(c => !headers.includes(c));
+  S.db30Rows = data; S.db30Name = label;
+  $('#stDb30').className = 'st ' + (miss.length ? 'err' : 'ok');
+  $('#stDb30').textContent = `${label}：${data.length.toLocaleString()}行` + (miss.length ? ` ⚠列なし: ${miss.join(', ')}` : '');
+}
+$('#fDb30').onchange =e => e.target.files[0] && loadCsvFile(e.target.files[0]);
+$('#fLog').onchange = e => e.target.files[0] && loadCsvFile(e.target.files[0]);
+$('#fShare').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try { S.shareMap = JSON.parse(await f.text()); $('#stShare').className = 'st ok'; $('#stShare').textContent = `${f.name}：${Object.keys(S.shareMap).length}件`; }
+  catch (err) { $('#stShare').className = 'st err'; $('#stShare').textContent = 'JSONを読めません: ' + err.message; }
+  rebuild();
+};
+$('#fDir').onchange = e => {
+  let added = 0;
+  for (const f of e.target.files) {
+    const p = parsePath(f.webkitRelativePath || f.name);
+    if (!p) continue;
+    S.rawFiles.set(p.id, { file: f, rel: f.webkitRelativePath, ...p }); added++;
+  }
+  const years = [...new Set([...S.rawFiles.values()].map(v => v.year || 'PO'))].sort();
+  $('#stDir').className = 'st ok';
+  $('#stDir').textContent = `${S.rawFiles.size.toLocaleString()}ファイル（今回 +${added}）／ ${years.join(', ')}`;
+  e.target.value = '';
+  rebuild();
+};
+$('#btnClearDir').onclick = () => { S.rawFiles.clear(); $('#stDir').className = 'st'; $('#stDir').textContent = '未読込'; rebuild(); };
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => { e.preventDefault(); [...e.dataTransfer.files].filter(f => /\.csv$/i.test(f.name)).forEach(loadCsvFile); });
+
+/* パス → {kind, year, customer, sub, name, id}
+   ID はローカルモードでは "local:<年>/<顧客>/<サブ>/…/<名前>"。Graph API 接続後は driveItem id に置き換わる */
+function parsePath(rel) {
+  const seg = rel.split('/');
+  const name = seg[seg.length - 1];
+  const yi = seg.findIndex(s => CONFIG.yearFolderRe.test(s));
+  if (yi >= 0) {
+    const year = +seg[yi].match(CONFIG.yearFolderRe)[1];
+    const rest = seg.slice(yi + 1);
+    if (CONFIG.receivedFolderRe.test(seg[yi]))
+      return { kind: 'po', year, customer: rest.length >= 2 ? rest[0] : '', sub: rest.length >= 3 ? rest[1] : '', name, id: `local:R${year}/${rest.join('/')}` };
+    return { kind: 'own', year, customer: rest.length >= 2 ? rest[0] : '', sub: rest.length >= 3 ? rest[1] : '', name, id: `local:${year}/${rest.join('/')}` };
+  }
+  const pi = seg.findIndex(s => CONFIG.customerPoFolderRe.test(s));
+  if (pi >= 0) {
+    const rest = seg.slice(pi + 1);
+    return { kind: 'po', year: null, customer: rest.length >= 2 ? rest[0] : '', sub: '顧客注文書', name, id: `local:PO/${rest.join('/')}` };
+  }
+  return null;
+}
+
+/* ---------- 処理ログ ---------- */
+function persistLog() {
+  lsSet('tokium_log_rows', JSON.stringify(S.log));
+  $('#unsaved').textContent = S.logDirty ? '● 処理ログに未保存の変更があります（「ログを保存」でCSVに書き出し）' : '';
+}
+function appendLog(rows) {
+  const now = new Date(); const iso = new Date(now - now.getTimezoneOffset() * 60000).toISOString().slice(0, 19) + '+09:00';
+  for (const r of rows) S.log.push(Object.fromEntries(CONFIG.logColumns.map(c => [c, c === 'logged_at' ? iso : c === 'user' ? ($('#userName').value || '') : (r[c] ?? '')])));
+  S.logDirty = true; persistLog(); rebuild();
+}
+$('#btnSaveLog').onclick = () => {
+  const lines = [CONFIG.logColumns.join(',')].concat(S.log.map(r => CONFIG.logColumns.map(c => csvCell(r[c])).join(',')));
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n') + '\r\n'], { type: 'text/csv' });
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `tokium_log_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.csv` });
+  a.click(); URL.revokeObjectURL(a.href);
+  S.logDirty = false; persistLog();
+};
+const normStatus = s => /既存/.test(s) ? 'TOKIUM記録あり' : /確定済/.test(s) ? '確定済' : /要確認/.test(s) ? '要確認' : /登録済/.test(s) ? '登録済（未確定）' : /未登録/.test(s) ? '未登録' : s;
+
+/* =====================================================================
+   突き合わせ
+   ===================================================================== */
+function rebuild() {
+  const C = CONFIG.db30, minY = Math.min(...CONFIG.targetYears), maxY = Math.max(...CONFIG.targetYears);
+  S.cases.clear(); S.quoteIndex.clear();
+  const poLinkToD = new Map(), poNameToD = new Map();
+  for (const r of S.db30Rows) {
+    const d = (r[C.d] || '').toUpperCase(); if (!/^D\d+$/.test(d)) continue;
+    const y = +(r[C.deliveryDate] || r[C.salesDate] || '').slice(0, 4);
+    if (!(y >= minY && y <= maxY)) continue;
+    const c = { d, row: r, year: y, docs: Object.fromEntries(DOC_TYPES.map(t => [t, []])),
+      tokiumLink: CONFIG.useDb30TokiumLink && CONFIG.tokiumLinkRe.test(r[C.invoiceLink] || '') && db30LinkCounts(r[C.invoiceLink], /^請求書/),
+      poTokium: CONFIG.useDb30TokiumLink && CONFIG.tokiumLinkRe.test(r[C.po] || '') && db30LinkCounts(r[C.po], /^注文書/),
+      invKind: tkKindOf(r[C.invoiceLink]), poKind: tkKindOf(r[C.po]),
+      invNotInCsv: db30UrlNotInCsv(r[C.invoiceLink]), poNotInCsv: db30UrlNotInCsv(r[C.po]) };
+    // DB30のPO列：tokium＝TOKIUMのURL／link＝SharePointリンク／empty＝空欄／other＝URL以外の文字だけ
+    const poRaw = (r[C.po] || '').trim();
+    c.poState = c.poTokium || CONFIG.tokiumLinkRe.test(poRaw) ? 'tokium' : /^https?:/.test(poRaw) ? 'link' : poRaw ? 'other' : 'empty';
+    S.cases.set(d, c);
+    const q = quoteKey(r[C.quote]); if (q) (S.quoteIndex.get(q) || S.quoteIndex.set(q, []).get(q)).push(d);
+    // PO列：SharePoint共有リンク（未登録）か、「TOKIUMのURL,ファイル名」（登録済）
+    const po = (r[C.po] || '').trim();
+    if (c.poTokium) { const nm = normName(po.split(',').slice(1).join(',')); if (nm) (poNameToD.get(nm) || poNameToD.set(nm, []).get(nm)).push(d); }
+    else if (/^https?:/.test(po)) (poLinkToD.get(po) || poLinkToD.set(po, []).get(po)).push(d);  // 1つのPOが複数案件にまたがることがある
+  }
+  // 共有リンク(→ファイルID) 経由で顧客POを特定
+  const poIdToD = new Map();
+  for (const [url, ds] of poLinkToD) { const id = S.shareMap[url]; if (id) poIdToD.set(id, [...new Set([...(poIdToD.get(id) || []), ...ds])]); }
+
+  // 処理ログ：drive_item_id ごとの最新行（状態用）と、D番号が入った最新行（PO紐づけ用）
+  // 状態は「ファイル×D番号」単位。キー＝drive_item_id|D番号（D番号なしの行は drive_item_id 単独）。ファイル名でも引けるようにする
+  const latest = new Map(), latestD = new Map();
+  const put = (k, r) => { if (!latest.has(k) || latest.get(k).logged_at <= r.logged_at) latest.set(k, r); };
+  for (const r of S.log) {
+    const ds = (r.d_number || '').toUpperCase().match(/D\d{4}/g) || [];
+    for (const base of [r.drive_item_id, 'name:' + r.file_name].filter(x => x && x !== 'name:')) {
+      if (ds.length) ds.forEach(d => put(`${base}|${d}`, r)); else put(base, r);
+    }
+    const k = r.drive_item_id;
+    if (k && r.d_number && (!latestD.has(k) || latestD.get(k).logged_at <= r.logged_at)) latestD.set(k, r);
+  }
+
+  // 書類ファイルを「拡張子違いの同名」でまとめる（PDF優先、xlsxだけなら「PDFなし」）
+  S.docs = []; S.excluded = [];
+  const groups = new Map();
+  for (const f of S.rawFiles.values()) {
+    if (f.year && !CONFIG.targetYears.includes(f.year)) { S.excluded.push({ ...f, reason: '対象年外' }); continue; }
+    if (!f.customer) { S.excluded.push({ ...f, reason: '顧客フォルダの外' }); continue; }
+    let type = '注文書', rule = null;
+    if (f.kind === 'po' && f.year && !CONFIG.receivedPoSubRe.test(f.sub)) { S.excluded.push({ ...f, reason: f.sub ? `相手方受領の注文書以外（${f.sub}）` : '顧客フォルダ直下' }); continue; }
+    if (f.kind === 'own') {
+      rule = CONFIG.folderRules.find(x => x.re.test(f.sub));
+      if (!f.sub || !rule) { S.excluded.push({ ...f, reason: f.sub ? `対象外フォルダ（${f.sub}）` : '顧客フォルダ直下' }); continue; }
+      if (!rule.type) { S.excluded.push({ ...f, reason: rule.reason }); continue; }
+      type = rule.type;
+    }
+    if (!CONFIG.docExt.test(f.name)) { S.excluded.push({ ...f, reason: 'PDF/Excel以外' }); continue; }
+    const key = (f.rel || f.id).replace(/\.[^.\/]+$/, '');  // Graphのidは拡張子を含まないのでパスで束ねる
+    const g = groups.get(key) || groups.set(key, { type, files: [] }).get(key);
+    g.files.push(f);
+  }
+  for (const g of groups.values()) {
+    const pdf = g.files.find(f => CONFIG.pdfExt.test(f.name));
+    const f = pdf || g.files[0];
+    const doc = { id: f.id, type: g.type, name: f.name, rel: f.rel, file: f.file, webUrl: f.webUrl || '', year: f.year, customer: f.customer, sub: f.sub,
+      hasPdf: !!pdf, others: g.files.filter(x => x !== f).map(x => x.name), dList: [], quote: '', method: '', reason: '' };
+    if (g.type === '見積書') {
+      doc.quote = extractQuote(f.name);
+      if (!doc.quote) { doc.reason = '見積番号を読めない'; }
+      else { const ds = S.quoteIndex.get(doc.quote); if (!ds) { S.excluded.push({ ...f, reason: '未受注の見積（DB30に見積Noなし）' }); continue; } doc.dList = ds; doc.method = 'filename'; }
+    } else if (g.type === '注文書') {
+      if (poIdToD.has(doc.id)) { doc.dList = poIdToD.get(doc.id); doc.method = 'link'; }
+      else if (poNameToD.has(normName(doc.name))) { doc.dList = poNameToD.get(normName(doc.name)); doc.method = 'db30name'; }
+      else if (latestD.has(doc.id)) { const lr = latestD.get(doc.id); doc.dList = lr.d_number.toUpperCase().match(/D\d{4}/g) || []; doc.method = lr.match_method || 'candidate'; doc.quote = lr.quote_no || ''; }
+      else doc.reason = '顧客PO：案件未特定（要Claude読み取り／候補から選択）';
+    } else {
+      const ds = extractDs(f.name);
+      if (!ds.length) doc.reason = 'ファイル名からD番号を読めない';
+      else { doc.dList = ds.filter(d => S.cases.has(d)); doc.method = 'filename';
+             if (!doc.dList.length) doc.reason = `DB30（対象年）にないD番号：${ds.join(', ')}`; }
+    }
+    doc.dList = doc.dList.filter(d => S.cases.has(d));
+    if (!doc.dList.length && !doc.reason) doc.reason = 'DB30（対象年）に案件がない';
+    if (!doc.hasPdf && !doc.dList.length) { S.excluded.push({ ...f, reason: 'Excel（案件に紐づかない）' }); continue; }
+    // 状態は D番号ごとに判定する（同じ見積書を複数の受注で使っていても、案件ごとに登録が必要：2026-09 決定）
+    for (const d of (doc.dList.length ? doc.dList : [null])) {
+      const e = { ...doc, dList: d ? [d] : [], sharedWith: doc.dList.filter(x => x !== d), key: d ? `${doc.id}|${d}` : doc.id };
+      const lr = d ? (latest.get(`${doc.id}|${d}`) || latest.get(`name:${doc.name}|${d}`) || latest.get(doc.id) || latest.get('name:' + doc.name))
+                   : (latest.get(doc.id) || latest.get('name:' + doc.name));
+      e.logRow = lr || null;
+      const c = d && S.cases.get(d);
+      if (!e.hasPdf) e.status = 'PDFなし';
+      else if (lr && lr.status) e.status = normStatus(lr.status);
+      else if (c && tkList(d, e.type).length) e.status = 'TOKIUM記録あり';
+      else if (c && e.type === '請求書' && c.tokiumLink) e.status = 'TOKIUM記録あり';
+      else if (c && e.type === '注文書' && c.poTokium) e.status = 'TOKIUM記録あり';
+      else if (c && isNotRequired(c, e.type)) e.status = '不要';  // 書類不要の取引先（ファイルがあっても登録対象外）
+      else if (c && tkRef(d, e.type).length) { e.status = '要確認'; e.reverseRef = true; }  // TOKIUMに反対の種別（●相手）で登録あり
+      else if (e.type === '注文書' && e.method === 'link') e.status = '未登録';
+      else e.status = '未登録';
+      S.docs.push(e);
+    }
+  }
+  // Excelは、同じ案件・同じ種別のPDFが無いときだけ「PDFなし」として残す（ファイル名が違うPDFがある場合は対象外）
+  const pdfKeys = new Set(S.docs.filter(d => d.hasPdf).flatMap(d => d.dList.map(x => d.type + x)));
+  S.docs = S.docs.filter(d => {
+    if (d.hasPdf || !d.dList.every(x => pdfKeys.has(d.type + x))) return true;
+    S.excluded.push({ ...d, reason: 'Excel（同じ案件のPDFあり）' }); return false;
+  });
+  for (const doc of S.docs) for (const d of doc.dList) S.cases.get(d).docs[doc.type].push(doc);
+  for (const k of [...S.selected]) if (!S.docs.some(d => d.key === k && selectable(d))) S.selected.delete(k);
+  renderFilters(); render();
+}
+const quoteKey = s => { const m = String(s || '').match(/M(\d{4,5})/i); return m ? 'M' + m[1] : ''; };
+const extractQuote = name => { const m = name.match(CONFIG.quoteNoRe); return m ? 'M' + m[1] : ''; };
+const extractDs = name => [...new Set([...name.matchAll(CONFIG.dNumberRe)].map(m => 'D' + m[1]))];
+const normName = s => String(s || '').trim().replace(/\.(pdf|xlsx?|csv)$/i, '').replace(/[\s　]/g, '').toLowerCase();
+/* セルの状態。書類ファイルが無くても、DB30にTOKIUMのURLがあれば「TOKIUM記録あり」 */
+const isNotRequired = (c, t) => CONFIG.notRequired.some(x => x.types.includes(t) && x.customer.test(c.row[CONFIG.db30.customer] || ''));
+function cellStatus(c, t) {
+  const docs = c.docs[t];
+  if (isNotRequired(c, t) && !docs.some(d => ['TOKIUM記録あり', '確定済', '登録済（未確定）'].includes(d.status)) && !tkList(c.d, t).length) return '不要';
+  if (docs.length) return STATUS_ORDER.find(s => docs.some(d => d.status === s)) || docs[0].status;
+  if ((t === '注文書' && c.poTokium) || (t === '請求書' && c.tokiumLink) || tkList(c.d, t).length) return 'TOKIUM記録あり';
+  if (tkRef(c.d, t).length) return '要確認';  // TOKIUMに反対の種別（●相手）で登録あり
+  if ((t === '請求書' && c.invKind && !/^請求書/.test(c.invKind)) || (t === '注文書' && c.poKind && !/^注文書/.test(c.poKind))) return '未登録';  // DB30欄のURLが別の書類
+  if ((t === '請求書' && c.invNotInCsv) || (t === '注文書' && c.poNotInCsv)) return '未登録';  // DB30にURLはあるがTOKIUMのCSVに無い
+  if (t === '注文書' && (c.poState === 'empty' || c.poState === 'other')) return 'POリンクなし';
+  if (t === '注文書' && c.poState === 'link') return '未登録';  // リンクはあるがファイル未検出（TOKIUMにも無い）
+  if (t === '見積書' && quoteKey(c.row[CONFIG.db30.quote])) return '未登録';  // DB30に見積Noがある＝見積書はあるはず（ファイル未検出）
+  if (t === '納品書' && c.row[CONFIG.db30.deliveryDate] && ymd(c.row[CONFIG.db30.deliveryDate]) <= todayYmd) return '未登録';  // 納品日を過ぎた＝納品書はあるはず（不要の取引先は上で「不要」）
+  return 'なし';
+}
+
+/* =====================================================================
+   描画
+   ===================================================================== */
+function renderFilters() {
+  const keep = (sel, opts, all = 'すべて') => { const el = $(sel), v = el.value; el.innerHTML = `<option value="">${all}</option>` + opts.map(o => `<option>${esc(o)}</option>`).join(''); if (opts.includes(v)) el.value = v; };
+  keep('#flYear', [...new Set([...S.cases.values()].map(c => String(c.year)))].sort().reverse());
+  keep('#flUser', [...new Set([...S.cases.values()].map(c => c.row[CONFIG.db30.user]).filter(Boolean))].sort());
+  // 顧客：案件数の多い順（件数つき）
+  const cc = {}; for (const c of S.cases.values()) { const n = c.row[CONFIG.db30.customer]; if (n) cc[n] = (cc[n] || 0) + 1; }
+  const names = Object.keys(cc).sort((a, b) => cc[b] - cc[a] || a.localeCompare(b, 'ja'));
+  S.custNames = new Set(names);
+  $('#custList').innerHTML = names.map(n => `<option value="${esc(n)}">${cc[n]}件</option>`).join('');
+  keep('#flStatus', STATUS_ORDER.concat(['POリンクなし', '不要', 'なし']));
+}
+function caseMatches(c) {
+  const C = CONFIG.db30, r = c.row;
+  if ($('#flYear').value && String(c.year) !== $('#flYear').value) return false;
+  if ($('#flUser').value && r[C.user] !== $('#flUser').value) return false;
+  // 顧客：候補から選んだ（名前が完全一致）ならその顧客だけ、途中まで入力なら得意先名・エンドユーザの部分一致（大文字小文字は区別しない）
+  const cu = $('#flCust').value.trim();
+  if (cu && (S.custNames?.has(cu) ? r[C.customer] !== cu : !(r[C.customer] + ' ' + r[C.endUser]).toLowerCase().includes(cu.toLowerCase()))) return false;
+  const no = $('#flNo').value.trim().toUpperCase(); if (no && !c.d.includes(no) && !(r[C.quote] || '').toUpperCase().includes(no)) return false;
+  const types = $('#flType').value ? [$('#flType').value] : DOC_TYPES;
+  if ($('#flHasDoc').checked && !types.some(t => c.docs[t].length || cellStatus(c, t) !== 'なし')) return false;
+  const st = S.filterStatus || $('#flStatus').value;
+  if (st === 'POリンクなし') { if (c.poState !== 'empty' && c.poState !== 'other') return false; }
+  else if (st && !types.some(t => cellStatus(c, t) === st)) return false;
+  return true;
+}
+let visibleCases = [];
+const MARK = { 'TOKIUM記録あり': '✓ 登録済', '確定済': '✓ 確定', '登録済（未確定）': '◐ 仮登録', '未登録': '✗ 未登録', '未確認': '? 未確認', '要確認': '! 要確認', 'PDFなし': 'PDFなし', 'なし': '—', '納品前': '納品前', 'POリンクなし': '△ PO欄空', '不要': '不要' };
+const ymd = s => String(s || '').replace(/\/(\d)(?!\d)/g, '/0$1');
+const todayYmd = (() => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`; })();
+function docCell(c, t) {
+  const ds = c.docs[t]; let st = cellStatus(c, t);
+  if (st === 'なし' && (t === '納品書' || t === '請求書') && ymd(c.row[CONFIG.db30.deliveryDate]) > todayYmd) st = '納品前';
+  const shared = [...new Set(ds.flatMap(d => d.sharedWith || []))];
+  const sub = [ds.length > 1 ? `${ds.length}件` : '', shared.length ? `共用 ${shared.join(',')}` : ''].filter(Boolean).join(' ');
+  // 注文書：DB30のPO欄の状態も添える
+  const poNote = t !== '注文書' ? '' : st === 'POリンクなし' ? (c.poState === 'other' ? 'PO欄がURL以外' : '') :
+    (c.poState === 'empty' || c.poState === 'other') ? 'DB30 PO欄空' : '';
+  // 未登録のときは、登録に使うファイルがあるかどうかも出す
+  const fileNote = st === '未登録' || st === 'PDFなし' ? (ds.some(d => d.hasPdf) ? ['ファイルあり', 'ok'] : ds.length ? ['Excelのみ', 'warn'] : ['ファイル未検出', 'warn']) : null;
+  // DB30のリンク欄のTOKIUM URLが、別の種別の書類を指している（例：請求書欄に納品書のURL）
+  const linkKind = t === '請求書' ? c.invKind : t === '注文書' ? c.poKind : '';
+  const linkNote = linkKind && !(t === '請求書' ? /^請求書/ : /^注文書/).test(linkKind) ? `DB30欄のURLは${linkKind.replace(/\(.*\)$/, '')}`
+    : ((t === '請求書' && c.invNotInCsv) || (t === '注文書' && c.poNotInCsv)) && st !== 'TOKIUM記録あり' ? 'DB30のURLがCSVに無い' : '';
+  const revNote = st === '要確認' && tkRef(c.d, t).length && !tkList(c.d, t).length && !(t === '請求書' && c.tokiumLink);
+  const tip = t === '注文書' && (c.poState === 'empty' || c.poState === 'other') ? `（DB30のPO欄：${c.poState === 'empty' ? '空欄' : c.row[CONFIG.db30.po]}）` : '';
+  return `<td class="doc" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>` : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}</td>`;
+}
+function updateLoadSummary() {
+  const parts = [];
+  parts.push(G.account ? `✓ ${G.account.name || 'サインイン済み'}` : '未サインイン');
+  parts.push(S.db30Rows.length ? `DB30：${S.db30Name.replace(/^SharePoint |^手動読込 /, '')}` : 'DB30：未読込');
+  parts.push(S.rawFiles.size ? `書類 ${S.rawFiles.size.toLocaleString()}件` : '書類：未読込');
+  parts.push(S.tokium ? `TOKIUM一覧：${S.tokium.date || S.tokium.label}時点` : 'TOKIUM一覧：未読込');
+  $('#loadSumText').textContent = parts.join('　／　');
+}
+function render() {
+  const C = CONFIG.db30;
+  updateLoadSummary();
+  // 集計（書類単位）
+  const cnt = {}; for (const d of S.docs) if (d.dList.length) cnt[d.status] = (cnt[d.status] || 0) + 1;
+  const unm = S.docs.filter(d => !d.dList.length);
+  $('#chips').innerHTML = STATUS_ORDER.map(s => `<span class="chip ${S.filterStatus === s ? 'on' : ''}" data-st="${s}" title="${s}"><span class="mk s-${s}">${MARK[s]}</span><span class="n">${cnt[s] || 0}</span></span>`).join('')
+    + `<span class="chip ${S.filterStatus === 'POリンクなし' ? 'on' : ''}" data-st="POリンクなし" title="DB30のPO欄が空（またはURL以外）の案件"><span class="mk s-POリンクなし">${MARK['POリンクなし']}</span><span class="n">${[...S.cases.values()].filter(c => c.poState === 'empty' || c.poState === 'other').length}</span></span>`
+    + `<span class="chip" data-go="unmatched"><span class="badge b-要確認">未紐づけ</span><span class="n">${unm.length}</span></span>`
+    + `<span class="muted small" style="align-self:center">（書類単位の件数。案件数：${S.cases.size.toLocaleString()}）</span>`;
+  // 一覧
+  visibleCases = [...S.cases.values()].filter(caseMatches).sort((a, b) => b.d.localeCompare(a.d, 'ja', { numeric: true }));
+  const LIMIT = 1500;
+  $('#tblCases tbody').innerHTML = visibleCases.slice(0, LIMIT).map(c => {
+    const r = c.row; const sel = DOC_TYPES.flatMap(t => c.docs[t]).filter(selectable);
+    const allOn = sel.length && sel.every(d => S.selected.has(d.key));
+    return `<tr data-d="${c.d}"><td>${sel.length ? `<input type="checkbox" class="selCase" ${allOn ? 'checked' : ''}>` : ''}</td>
+      <td><a href="#" class="openCase">${c.d}</a><div class="small muted">${esc(r[C.quote])}</div></td>
+      <td class="cp" title="${esc(r[C.customer] + ' ／ ' + r[C.item])}"><div>${esc(r[C.customer])}</div><div class="small muted">${esc(r[C.item])}</div></td>
+      <td class="num">${fmtYen(r[C.amount])}</td>
+      <td>${esc(r[C.deliveryDate])}<div class="small muted">${esc(r[C.user])}</div></td>
+      ${DOC_TYPES.map(t => docCell(c, t)).join('')}</tr>`;
+  }).join('');
+  $('#listNote').textContent = visibleCases.length > LIMIT ? `表示 ${LIMIT} / ${visibleCases.length} 件（条件で絞り込んでください）` : `${visibleCases.length} 件`;
+  $('#cntList').textContent = visibleCases.length;
+  // 未紐づけ
+  $('#cntUnm').textContent = unm.length;
+  $('#tblUnm tbody').innerHTML = unm.map(d => {
+    const isPo = d.type === '注文書';
+    const cands = isPo ? poCandidates(d) : [];
+    return `<tr data-id="${esc(d.key)}"><td>${d.hasPdf && isPo ? `<input type="checkbox" class="selDoc" ${S.selected.has(d.key) ? 'checked' : ''}>` : ''}</td>
+      <td>${d.type}</td><td class="small">${esc(d.reason)}</td><td>${esc(d.customer)}</td>
+      <td class="small"><a href="#" class="openFile">${esc(d.name)}</a></td>
+      <td>${isPo ? `<select class="candSel"><option value="">候補 ${cands.length}件から選択…</option>${cands.map(c => `<option value="${c.d}">${c.d} ${esc(c.row[CONFIG.db30.deliveryDate])} ${fmtYen(c.row[CONFIG.db30.amount])}円 ${esc((c.row[CONFIG.db30.item] || '').slice(0, 30))}</option>`).join('')}</select> <button class="small assignPo">紐づけ</button>` : '<span class="muted small">ファイル名を修正して再読込</span>'}</td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="muted">ありません</td></tr>';
+  // 対象外
+  $('#cntEx').textContent = S.excluded.length;
+  const exc = {}; for (const e of S.excluded) exc[e.reason] = (exc[e.reason] || 0) + 1;
+  $('#exSummary').innerHTML = Object.entries(exc).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<span class="chip"><span class="badge b-対象外">${esc(k)}</span><span class="n">${v}</span></span>`).join('');
+  $('#tblEx tbody').innerHTML = S.excluded.slice(0, 800).map(e => `<tr><td class="small">${esc(e.reason)}</td><td>${e.year ?? ''}</td><td>${esc(e.customer)}</td><td>${esc(e.sub)}</td><td class="small">${esc(e.name)}</td></tr>`).join('');
+  // ログ
+  $('#cntLog').textContent = S.log.length;
+  $('#logNote').textContent = `${S.log.length}行（同じファイルは最新の行を採用）`;
+  $('#tblLog tbody').innerHTML = [...S.log].reverse().slice(0, 500).map(r => `<tr><td class="small">${esc(r.logged_at)}</td><td>${esc(r.user)}</td><td>${esc(r.doc_type)}</td><td>${esc(r.d_number)}</td><td>${esc(r.quote_no)}</td><td><span class="badge b-${normStatus(r.status)}">${esc(r.status)}</span></td><td>${esc(r.match_method)}</td><td class="small">${esc(r.file_name)}</td><td class="small">${esc(r.note)}</td></tr>`).join('');
+  updateSel();
+}
+function poCandidates(doc) {
+  const norm = s => String(s || '').replace(/株式会社|（株）|\(株\)|\s/g, '');
+  const cu = norm(doc.customer);
+  return [...S.cases.values()].filter(c => cu && (norm(c.row[CONFIG.db30.customer]).includes(cu) || cu.includes(norm(c.row[CONFIG.db30.customer]))) && !c.docs['注文書'].length)
+    .sort((a, b) => b.d.localeCompare(a.d, 'ja', { numeric: true })).slice(0, 40);
+}
+function updateSel() {
+  const n = S.selected.size;
+  $('#selCount').textContent = n; $('#btnCopy').disabled = $('#btnCopyOnly').disabled = !n;
+}
+
+/* ---------- イベント ---------- */
+['#flYear', '#flUser', '#flType', '#flStatus', '#flHasDoc'].forEach(s => $(s).onchange = () => { S.filterStatus = ''; render(); });
+['#flCust', '#flNo'].forEach(s => $(s).oninput = render);
+$('#btnCustClear').onclick = () => { $('#flCust').value = ''; render(); $('#flCust').focus(); };
+$('#btnReset').onclick = () => { ['#flYear', '#flUser', '#flType', '#flStatus', '#flCust', '#flNo'].forEach(s => $(s).value = ''); S.filterStatus = ''; render(); };
+$('#chips').onclick = e => {
+  const ch = e.target.closest('.chip'); if (!ch) return;
+  if (ch.dataset.go) return showTab(ch.dataset.go);
+  S.filterStatus = S.filterStatus === ch.dataset.st ? '' : ch.dataset.st; $('#flStatus').value = ''; showTab('list'); render();
+};
+$('#tabs').onclick = e => { const t = e.target.closest('.tab'); if (t) showTab(t.dataset.tab); };
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
+  ['list', 'unmatched', 'excluded', 'import', 'log'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
+}
+const docsOfCase = (c, types = $('#flType').value ? [$('#flType').value] : DOC_TYPES) => types.flatMap(t => c.docs[t]).filter(selectable);
+$('#tblCases').onclick = e => {
+  const tr = e.target.closest('tr[data-d]'); if (!tr) return;
+  const c = S.cases.get(tr.dataset.d);
+  if (e.target.classList.contains('selCase')) { for (const d of docsOfCase(c, DOC_TYPES)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); updateSel(); return; }
+  if (e.target.closest('.openCase') || e.target.closest('td.doc')) { e.preventDefault(); openDrawer(c); }
+};
+$('#chkAllVisible').onchange = e => {
+  for (const c of visibleCases) for (const d of docsOfCase(c)) if (d.status === '未登録' || d.status === '未確認') e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key);
+  render();
+};
+$('#tblUnm').onclick = e => {
+  const tr = e.target.closest('tr[data-id]'); if (!tr) return;
+  const doc = S.docs.find(d => d.key === tr.dataset.id);
+  if (e.target.classList.contains('selDoc')) { e.target.checked ? S.selected.add(doc.key) : S.selected.delete(doc.key); updateSel(); }
+  if (e.target.closest('.openFile')) { e.preventDefault(); openFile(doc); }
+  if (e.target.classList.contains('assignPo')) {
+    const d = tr.querySelector('.candSel').value; if (!d) return alert('候補からD番号を選んでください');
+    const r = S.cases.get(d).row;
+    appendLog([{ doc_type: '注文書', d_number: d, quote_no: r[CONFIG.db30.quote], file_name: doc.name, drive_item_id: doc.id, match_method: 'candidate', partner: r[CONFIG.db30.customer], status: '未登録', note: '担当者が候補から紐づけ' }]);
+  }
+};
+$('#btnSelClear').onclick = () => { S.selected.clear(); render(); };
+function openFile(doc) { if (doc.webUrl) return window.open(doc.webUrl, '_blank', 'noopener'); if (!doc.file) return; const u = URL.createObjectURL(doc.file); window.open(u, '_blank'); setTimeout(() => URL.revokeObjectURL(u), 60000); }
+
+/* ---------- 詳細ドロワー ---------- */
+let drawerCase = null;
+function openDrawer(c) {
+  drawerCase = c; const C = CONFIG.db30, r = c.row;
+  $('#dwTitle').textContent = `${c.d}　${r[C.customer]}`;
+  const link = u => /^https?:/.test(u) ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.length > 60 ? u.slice(0, 60) + '…' : u)}</a>` : esc(u);
+  // DB30のリンク欄：「URL,ファイル名」の形。TOKIUMのURLか、SharePointのリンクか、空欄かを表示
+  const db30Link = (raw, expectRe, expectName) => {
+    raw = (raw || '').trim();
+    if (!raw) return '<span class="mk s-POリンクなし">空欄</span>';
+    const [u, ...rest] = raw.split(','), nm = rest.join(',');
+    const kind = CONFIG.tokiumLinkRe.test(u) ? ['s-TOKIUM記録あり', 'TOKIUMのURLあり', 'TOKIUMで開く'] : /^https?:/.test(u) ? ['s-登録済（未確定）', 'SharePointリンクあり', 'ファイルを開く'] : ['s-POリンクなし', 'URL以外の文字', ''];
+    // TOKIUM一覧を読んでいれば、URLの先の書類種別も出す（違う種別なら警告）
+    const tkK = CONFIG.tokiumLinkRe.test(u) ? tkKindOf(raw) : '';
+    const kindNote = !CONFIG.tokiumLinkRe.test(u) || !S.tokium ? '' : !tkK ? '<div class="small" style="color:#b35900">⚠ このURLはTOKIUMのCSVにありません。登録済みとしては数えていません（CSVの出力後に登録した場合は、CSVを出し直すと反映されます）</div>'
+      : expectRe.test(tkK) ? `<div class="small muted">TOKIUMでは「${esc(tkK)}」</div>`
+      : `<div class="small" style="color:#b35900">⚠ TOKIUMでは「${esc(tkK)}」のURLです（${expectName}ではないため、${expectName}の登録済みとしては数えていません）</div>`;
+    return `<span class="mk ${kind[0]}">${kind[1]}</span>${kind[2] ? ` <a href="${esc(u)}" target="_blank" rel="noopener">${kind[2]}</a>` : ''}${kindNote}`
+      + `${nm || !kind[2] ? `<div class="small muted">${esc(nm || raw)}</div>` : ''}`;
+  };
+  // TOKIUMの登録（国税関係書類詳細CSV）：4種類のリンク
+  const tk = Object.fromEntries(DOC_TYPES.map(t => [t, tkList(c.d, t)]));
+  const tkRows = !S.tokium ? '<div class="small muted">TOKIUMのCSVが未読込です（上の「TOKIUMの登録済み一覧」から読み込むと表示されます）</div>'
+    : `<table class="tkTbl">${DOC_TYPES.map(t => `<tr><th>${t}</th><td>${(tk[t] || []).length
+        ? tk[t].map(x => `<span class="mk s-TOKIUM記録あり">登録あり</span> <a href="${esc(tkUrl(x))}" target="_blank" rel="noopener">TOKIUMで開く</a> <span class="small">${esc(x.date)}　${fmtYen(x.amount)}円${x.needCustomer ? `　<span class="muted">（${esc(x.kind)}＝相手方発行・顧客指定の様式）</span>` : ''}</span><div class="small muted">${esc(x.memo)}</div>`).join('')
+        : '<span class="mk s-未登録">登録なし</span>'}${tkRef(c.d, t).map(x => `<div class="tkRef"><span class="mk s-要確認">反対種別</span> ${esc(x.kind)}で登録あり（通常と逆の種別のため「要確認」。登録済みとしては数えていません） <a href="${esc(tkUrl(x))}" target="_blank" rel="noopener">TOKIUMで開く</a> <span class="small">${esc(x.date)}　${fmtYen(x.amount)}円</span><div class="small muted">${esc(x.memo)}</div></div>`).join('')}</td></tr>`).join('')}</table>`
+      + `<div class="small muted">${esc(S.tokium.label)}${S.tokium.date ? `（${S.tokium.date}時点）` : ''}</div>`;
+  $('#dwBody').innerHTML = `<dl class="kv">
+    <dt>見積No</dt><dd>${esc(r[C.quote])}</dd><dt>品名</dt><dd>${esc(r[C.item])}</dd>
+    <dt>得意先／担当</dt><dd>${esc(r[C.customer])}　${esc(r[C.contact])}${r[C.endUser] ? `（EU：${esc(r[C.endUser])}）` : ''}</dd>
+    <dt>金額</dt><dd>${fmtYen(r[C.amount])}円（税込 ${fmtYen(r[C.amountTax])}円）</dd>
+    <dt>納品日／検収日</dt><dd>${esc(r[C.deliveryDate])}／${esc(r[C.salesDate])}</dd><dt>登録者</dt><dd>${esc(r[C.user])}</dd>
+    <dt>DB30 PO欄</dt><dd>${db30Link(r[C.po], /^注文書/, '注文書')}</dd>
+    <dt>DB30 納品書・請求書欄</dt><dd>${db30Link(r[C.invoiceLink], /^請求書/, '請求書')}</dd>
+  </dl>
+  <h3>TOKIUMの登録</h3>${tkRows}
+  <div class="row" style="margin-top:6px"><button class="small primary" id="btnTkSearch" data-q="${esc(c.d)}">TOKIUMで ${esc(c.d)} を検索</button><span class="small muted" id="tkSearchMsg"></span></div>
+  <h3 style="margin-top:14px">SharePointの書類ファイル</h3>`
+  + DOC_TYPES.map(t => `<div class="small" style="font-weight:600;margin-top:6px">${t}</div>` + (c.docs[t].length ? c.docs[t].map(d => docItem(d)).join('') : '<div class="muted small">ファイルなし</div>')).join('');
+  $('#drawer').classList.add('open');
+}
+function docItem(d) {
+  const lr = d.logRow;
+  return `<div class="docitem" data-id="${esc(d.key)}">
+    <div class="row">${selectable(d) ? `<input type="checkbox" class="selDoc" ${S.selected.has(d.key) ? 'checked' : ''}>` : ''}
+      <span class="badge b-${d.status}">${d.status}</span><span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
+      <span style="margin-left:auto"></span>
+      ${d.file || d.webUrl ? '<button class="small openF">開く</button>' : ''}
+      ${['登録済（未確定）', 'TOKIUM記録あり'].includes(d.status) ? '<button class="small primary doConfirm">確定済にする</button>' : ''}
+      ${['登録済（未確定）', '要確認', '確定済'].includes(d.status) ? '<button class="small doReset">未登録に戻す</button>' : ''}
+    </div>
+    <div class="nm small">${esc(d.name)}</div>
+    <div class="small muted">${esc(d.rel)}${d.others.length ? `　（同名：${esc(d.others.join(', '))}）` : ''}</div>
+    ${lr ? `<div class="small">ログ：${esc(lr.logged_at)} ${esc(lr.user)} 「${esc(lr.status)}」${lr.note ? ' ' + esc(lr.note) : ''}</div>` : ''}
+  </div>`;
+}
+$('#dwClose').onclick = () => $('#drawer').classList.remove('open');
+async function openTokiumSearch(q) {
+  const tpl = CONFIG.tokiumSearchUrl;
+  if (tpl.includes('{q}')) { window.open(tpl.replace('{q}', encodeURIComponent(q)), '_blank', 'noopener'); return ''; }
+  const ok = await copyText(q);
+  window.open(tpl, '_blank', 'noopener');
+  return ok ? `「${q}」をコピーしました。TOKIUMの検索欄に貼り付けてください（Ctrl+V）` : 'コピーできませんでした';
+}
+$('#dwBody').onclick = e => {
+  if (e.target.id === 'btnTkSearch') { openTokiumSearch(e.target.dataset.q).then(m => $('#tkSearchMsg').textContent = m); return; }
+  const it = e.target.closest('.docitem'); if (!it) return;
+  const d = S.docs.find(x => x.key === it.dataset.id);
+  if (e.target.classList.contains('selDoc')) { e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
+  if (e.target.classList.contains('openF')) openFile(d);
+  const base = () => { const r = S.cases.get(d.dList[0])?.row || {}; return { doc_type: d.type, d_number: d.dList.join(' '), quote_no: d.quote || r[CONFIG.db30.quote] || '', file_name: d.name, drive_item_id: d.id, match_method: d.method, partner: r[CONFIG.db30.customer] || '' }; };
+  if (e.target.classList.contains('doConfirm')) {
+    if (!$('#userName').value) return alert('担当者名を入力してください');
+    appendLog([{ ...base(), status: '確定済', note: 'TOKIUM上で確認・確定' }]); openDrawer(drawerCase);
+  }
+  if (e.target.classList.contains('doReset') && confirm('この書類を「未登録」に戻しますか？（ログに行を追加します）')) {
+    appendLog([{ ...base(), status: '未登録', note: '担当者が未登録に戻した' }]); openDrawer(drawerCase);
+  }
+};
+
+/* =====================================================================
+   指示文
+   ===================================================================== */
+function buildPrompt() {
+  const C = CONFIG.db30, root = $('#rootPath').value.trim().replace(/[\\\/]+$/, '');
+  const docs = S.docs.filter(d => S.selected.has(d.key));
+  const lines = docs.map((d, i) => {
+    const r = S.cases.get(d.dList[0])?.row;
+    const path = d.webUrl ? `${d.rel}\n   SharePoint：${d.webUrl}` : root ? root + '\\' + d.rel.replace(/\//g, '\\') : d.rel;
+    const fnDate = (d.name.match(/^(\d{4})(\d{2})(\d{2})_/) || []).slice(1).join('/');
+    let s = `${i + 1}. [${d.type}] ${d.dList.length ? d.dList.join('・') : 'D番号未特定'} / ファイル：${d.name}\n   保存場所：${path}`;
+    if (r) s += `\n   参考値（DB30）：取引先=${r[C.customer]} 見積No=${r[C.quote]} 金額=${fmtYen(r[C.amount])}円(税抜)／${fmtYen(r[C.amountTax])}円(税込) 納品日=${r[C.deliveryDate]} 検収日=${r[C.salesDate]}${fnDate ? ` ファイル名の日付=${fnDate}` : ''}`;
+    else s += `\n   → PDF内の見積No（M+数字）を読み取り、報告の quote_no に入れてください。取引先フォルダ：${d.customer}`;
+    return s;
+  });
+  return `TOKIUM入力スキルに従って、次の書類をTOKIUMに登録してください。
+確定ボタンは絶対に押さず、保存（未確定）で止めてください。
+書類は案件（D番号）ごとに登録します。同じファイルが別のD番号で登録済みでも、ここに書いたD番号の分は新しく登録してください。
+登録する前に、TOKIUMの書類一覧で「同じ書類種別」かつ「メモ欄に同じD番号」の書類が既に無いか検索し、あれば新しく登録せず status を「既存」として報告してください。
+メモ欄は既存の書き方に合わせて入力してください（見積書：「M番号_D番号」、注文書・納品書・請求書：「D番号_PO#注文番号 品名」）。このD番号がメモ欄に無いと、登録状況を照合できません。
+
+対象：
+${lines.join('\n')}
+
+入力値は参考値（DB30）を優先し、PDFは照合に使ってください。
+PDFの内容と参考値が食い違う場合は入力せず「要確認」にしてください。
+最後に、1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は "" で囲む。status は「登録済」「既存」「要確認」のいずれか）：
+RESULT,<doc_type>,<d_number>,<quote_no>,<file_name>,<partner>,<doc_date>,<amount>,<status>,<note>`;
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch { const ta = Object.assign(document.createElement('textarea'), { value: t }); document.body.append(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove(); return ok; }
+}
+async function doCopy(open) {
+  const t = buildPrompt(); const ok = await copyText(t);
+  $('#copyMsg').textContent = ok ? `✓ ${S.selected.size}件分の指示文をコピーしました。Claude in Chrome のサイドパネルに貼り付けてください。` : 'コピーに失敗しました';
+  lsSet('tokium_last_prompt', t);
+  if (open && ok) window.open(CONFIG.tokiumUrl, '_blank', 'noopener');
+}
+$('#btnCopy').onclick = () => doCopy(true);
+$('#btnCopyOnly').onclick = () => doCopy(false);
+
+/* =====================================================================
+   結果の取り込み
+   ===================================================================== */
+const RES_COLS = ['doc_type', 'd_number', 'quote_no', 'file_name', 'partner', 'doc_date', 'amount', 'status', 'note'];
+$('#btnParse').onclick = () => {
+  const out = [];
+  for (const raw of $('#taImport').value.split(/\r?\n/)) {
+    const line = raw.replace(/^[\s`>*-]+/, '').trim();
+    if (!line.startsWith('RESULT,')) continue;
+    const cells = parseCSV(line)[0].slice(1);
+    const r = Object.fromEntries(RES_COLS.map((c, i) => [c, (cells[i] ?? '').trim()]));
+    // ファイル名で書類を特定（同名が複数あれば D番号で絞る）
+    let cand = S.docs.filter(d => d.name === r.file_name);
+    if (cand.length > 1 && r.d_number) cand = cand.filter(d => d.dList.includes(r.d_number.toUpperCase()));
+    const doc = cand.length === 1 ? cand[0] : null;
+    const e = { r, doc, err: '' , method: doc?.method || '' , d: (r.d_number || '').toUpperCase() };
+    if (!doc) e.err = cand.length ? '同名ファイルが複数' : 'ファイルが見つからない';
+    if (!/登録済|既存|要確認/.test(r.status)) e.err = e.err || `status が不正（${r.status}）`;
+    // 顧客PO：Claudeが読み取った見積No → D番号
+    if (doc && !doc.dList.length && r.quote_no) {
+      const ds = S.quoteIndex.get(quoteKey(r.quote_no));
+      if (ds && ds.length === 1) { e.d = ds[0]; e.method = 'quote_no'; }
+      else { e.warn = ds ? `見積No ${r.quote_no} に案件が複数（${ds.join(',')}）` : `見積No ${r.quote_no} がDB30にない`; }
+    }
+    if (doc && doc.dList.length && e.d && !doc.dList.includes(e.d)) e.warn = `D番号がツールの紐づけ（${doc.dList.join(',')}）と違う`;
+    if (doc && !e.d && doc.dList.length) e.d = doc.dList.join(' ');
+    out.push(e);
+  }
+  S.lastParsed = out;
+  const okN = out.filter(e => !e.err).length;
+  $('#impMsg').textContent = out.length ? `${out.length}行中 ${okN}行を反映できます` : 'RESULT 行が見つかりません';
+  $('#btnApply').disabled = !okN;
+  $('#impPreview').innerHTML = out.length ? `<table><thead><tr><th>判定</th><th>書類</th><th>D番号</th><th>見積No</th><th>状態</th><th>ファイル</th><th>取引先</th><th>日付</th><th>金額</th><th>備考</th></tr></thead><tbody>${out.map(e => `<tr>
+    <td>${e.err ? `<span class="badge b-要確認">×</span> <span class="small">${esc(e.err)}</span>` : e.warn ? `<span class="badge b-要確認">!</span> <span class="small">${esc(e.warn)}</span>` : '<span class="badge b-確定済">OK</span>'}</td>
+    <td>${esc(e.r.doc_type)}</td><td>${esc(e.d)}</td><td>${esc(e.r.quote_no)}</td><td><span class="badge b-${normStatus(e.r.status)}">${esc(normStatus(e.r.status))}</span></td>
+    <td class="small">${esc(e.r.file_name)}</td><td>${esc(e.r.partner)}</td><td>${esc(e.r.doc_date)}</td><td class="num">${fmtYen(e.r.amount)}</td><td class="small">${esc(e.r.note)}</td></tr>`).join('')}</tbody></table>` : '';
+};
+$('#btnApply').onclick = () => {
+  const rows = S.lastParsed.filter(e => !e.err).map(e => ({
+    doc_type: e.doc.type, d_number: e.d, quote_no: e.r.quote_no || e.doc.quote, file_name: e.doc.name, drive_item_id: e.doc.id,
+    match_method: e.method || 'filename', partner: e.r.partner, doc_date: e.r.doc_date, amount: e.r.amount,
+    status: /既存/.test(e.r.status) ? '既存（TOKIUM登録済）' : normStatus(e.r.status), note: [e.r.note, e.warn].filter(Boolean).join(' ／ '),
+  }));
+  appendLog(rows);
+  for (const e of S.lastParsed) if (!e.err) S.selected.delete(e.doc.key);
+  $('#impMsg').textContent = `✓ ${rows.length}行を処理ログに追加しました。「ログを保存」でCSVに書き出してください。`;
+  $('#btnApply').disabled = true; $('#taImport').value = ''; S.lastParsed = []; $('#impPreview').innerHTML = '';
+  render();
+};
+
+/* =====================================================================
+   SharePoint（Graph API）
+   ===================================================================== */
+const G = { pca: null, account: null, driveId: '', ok: false };
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function graphInit() {
+  const box = $('#stGraph');
+  if (!/^https?:$/.test(location.protocol) || !window.msal) {
+    box.className = 'st err';
+    box.textContent = !window.msal ? 'サインイン用ライブラリを読み込めません（ネットワークを確認）' : 'SharePoint接続は http://localhost:8766 か https で開いたときだけ使えます（ファイル直接開きでは不可）。下の「手動読み込み」を使ってください。';
+    $('#btnSignIn').disabled = true; $('#manualBox').open = true; return;
+  }
+  G.pca = new msal.PublicClientApplication({
+    auth: { clientId: CONFIG.graph.clientId, authority: `https://login.microsoftonline.com/${CONFIG.graph.tenantId}`, redirectUri: CONFIG.graph.redirect === 'page' ? location.origin + location.pathname : location.origin },  // Entraに登録したSPAのリダイレクトURIと一致させる
+    cache: { cacheLocation: 'localStorage' },
+  });
+  G.pca.handleRedirectPromise().catch(() => {}).then(() => {
+    const a = G.pca.getAllAccounts()[0];
+    if (a) setAccount(a);
+  });
+}
+function setAccount(a) {
+  G.account = a; G.pca.setActiveAccount(a);
+  $('#gsWho').textContent = `✓ ${a.name}`; $('#btnSignIn').textContent = '切替';
+  $('#btnScan').disabled = false;
+  updateLoadSummary();
+  if (!$('#userName').value) { $('#userName').value = (a.name || '').split(/[\s　]/)[0]; lsSet('tokium_user', $('#userName').value); }
+}
+$('#btnSignIn').onclick = async () => {
+  try { setAccount((await G.pca.loginPopup({ scopes: CONFIG.graph.scopes, prompt: 'select_account' })).account); }
+  catch (e) { $('#stGraph').className = 'st err'; $('#stGraph').textContent = 'サインイン失敗：' + e.message; }
+};
+async function gToken() {
+  try { return (await G.pca.acquireTokenSilent({ scopes: CONFIG.graph.scopes, account: G.account })).accessToken; }
+  catch { return (await G.pca.acquireTokenPopup({ scopes: CONFIG.graph.scopes, account: G.account })).accessToken; }
+}
+async function gGet(path) {
+  for (let i = 0; i < 4; i++) {
+    const r = await fetch(path.startsWith('http') ? path : GRAPH + path, { headers: { Authorization: 'Bearer ' + await gToken() } });
+    if (r.status === 429 || r.status === 503) { await sleep(1000 * (+r.headers.get('Retry-After') || 2 ** i)); continue; }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(`${r.status} ${j.error?.code || ''} ${j.error?.message || ''}（${path}）`);
+    return j;
+  }
+  throw new Error('混雑のため取得できません：' + path);
+}
+/* $batch（20件ずつ・4並列、429は待って再試行）。reqs: [{url, ctx}] → [{req, status, body}] */
+async function gBatch(reqs, onProgress) {
+  const out = []; let pending = reqs.map((r, i) => ({ ...r, _i: i })), done = 0;
+  for (let attempt = 0; pending.length && attempt < 6; attempt++) {
+    const chunks = []; for (let i = 0; i < pending.length; i += 20) chunks.push(pending.slice(i, i + 20));
+    const retry = []; let wait = 0;
+    const worker = async () => {
+      for (let c; (c = chunks.shift());) {
+        const r = await fetch(GRAPH + '/$batch', { method: 'POST', headers: { Authorization: 'Bearer ' + await gToken(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requests: c.map(q => ({ id: String(q._i), method: 'GET', url: q.url.replace(GRAPH, '') })) }) });
+        if (!r.ok) { retry.push(...c); wait = Math.max(wait, 3); continue; }
+        for (const res of (await r.json()).responses) {
+          const q = c.find(x => String(x._i) === res.id);
+          if (res.status === 429 || res.status >= 500) { retry.push(q); wait = Math.max(wait, +(res.headers?.['Retry-After']) || 2); continue; }
+          out.push({ req: q, status: res.status, body: res.body }); done++;
+        }
+        onProgress && onProgress(done, reqs.length);
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    pending = retry; if (pending.length) await sleep(wait * 1000);
+  }
+  for (const q of pending) out.push({ req: q, status: 0, body: { error: { message: '再試行の上限' } } });
+  return out;
+}
+const encPath = p => p.split('/').map(encodeURIComponent).join('/');
+const SEL = '$top=999&$select=id,name,file,folder,webUrl,lastModifiedDateTime';
+
+async function graphDrive() {
+  if (G.driveId) return G.driveId;
+  const site = await gGet('/sites/' + CONFIG.graph.sitePath + '?$select=id');
+  const drives = (await gGet(`/sites/${site.id}/drives?$select=id,name`)).value;
+  const d = drives.find(x => x.name === CONFIG.graph.driveName) || drives[0];
+  if (!d) throw new Error('ドキュメントライブラリが見つかりません');
+  return (G.driveId = d.id);
+}
+/* SharePointに置かれた最新の「国税関係書類詳細_YYYYMMDD.csv」を読む（無ければ何もしない） */
+/* 日付付きファイル名（例 db30_仕入販売管理BK_20260928.csv）の最新版を探す。
+   毎週ファイル名が変わる（前回分は削除）ので、検索は「置き場所のフォルダを見つける」ためだけに使い、
+   以降はそのフォルダの中身を直接一覧して最新日付を選ぶ（検索の反映遅れ・削除済みファイルの取り違えを防ぐ） */
+async function findLatestDated(searchText, re, cacheKey, folderPath) {
+  const D = await graphDrive();
+  const pick = items => items.filter(i => i.file && re.test(i.name)).sort((a, b) => a.name.match(re)[1].localeCompare(b.name.match(re)[1])).pop();
+  const list = async (driveId, folderId) => pick((await gGet(`/drives/${driveId}/items/${folderId}/children?$top=999&$select=id,name,file`)).value);
+  // ① 設定のフォルダパスを直接一覧（いちばん確実）
+  if (folderPath) {
+    try { const f = pick((await gGet(`/drives/${D}/root:/${encPath(folderPath)}:/children?$top=999&$select=id,name,file`)).value); if (f) return { ...f, driveId: D }; } catch {}
+  }
+  // ② 前回見つけたフォルダ
+  let loc = null; try { loc = JSON.parse(lsGet(cacheKey) || 'null'); } catch {}
+  if (loc) { try { const f = await list(loc.driveId, loc.folderId); if (f) return { ...f, driveId: loc.driveId }; } catch {} }
+  // ③ 検索でファイルを探し、その親フォルダを一覧（検索結果には親IDが無いことがあるので、ファイル自体を取得して親を調べる）
+  const hits = (await gGet(`/drives/${D}/root/search(q='${encodeURIComponent(searchText)}')?$select=id,name,file,parentReference`)).value
+    .filter(i => i.file && re.test(i.name)).sort((a, b) => b.name.match(re)[1].localeCompare(a.name.match(re)[1]));
+  for (const h of hits) {
+    const driveId = h.parentReference?.driveId || D;
+    let parentId = h.parentReference?.id;
+    if (!parentId) { try { parentId = (await gGet(`/drives/${driveId}/items/${h.id}?$select=id,parentReference`)).parentReference?.id; } catch { continue; } }  // 削除済み（先週分）なら次へ
+    if (!parentId) continue;
+    try { const f = await list(driveId, parentId); if (f) { lsSet(cacheKey, JSON.stringify({ driveId, folderId: parentId })); return { ...f, driveId }; } } catch {}
+  }
+  return null;
+}
+async function downloadCsv(f) {
+  const meta = await gGet(`/drives/${f.driveId}/items/${f.id}`);
+  const res = await fetch(meta['@microsoft.graph.downloadUrl']); if (!res.ok) throw new Error(`${f.name} のダウンロード失敗 ${res.status}`);
+  return toObjects(parseCSV(decodeCSV(await res.arrayBuffer())));
+}
+/* 取引先ごとのルールをSharePointのJSONから読む（CONFIG.graph.rulesPath があるときだけ）
+   形式：{"notRequired":[{"customer":"^取引先名","types":["納品書"]}], "customerIssued":[...]}（customerは正規表現、大文字小文字は区別しない） */
+async function graphLoadRules() {
+  if (!CONFIG.graph.rulesPath) return '';
+  const D = await graphDrive();
+  const meta = await gGet(`/drives/${D}/root:/${encPath(CONFIG.graph.rulesPath)}`);
+  const res = await fetch(meta['@microsoft.graph.downloadUrl']); if (!res.ok) throw new Error('ルールファイルのダウンロード失敗 ' + res.status);
+  const j = JSON.parse(new TextDecoder('utf-8').decode(await res.arrayBuffer()).replace(/^﻿/, ''));
+  const conv = a => (a || []).map(x => ({ customer: new RegExp(x.customer, 'i'), types: x.types || [] }));
+  CONFIG.notRequired = conv(j.notRequired); CONFIG.customerIssued = conv(j.customerIssued);
+  return `ルール ${CONFIG.notRequired.length + CONFIG.customerIssued.length}件`;
+}
+async function graphLoadTokium() {
+  const f = await findLatestDated(CONFIG.graph.tokiumSearch, CONFIG.graph.tokiumNameRe, 'tokium_loc_tk', CONFIG.graph.tokiumFolder);
+  if (!f) return;
+  const { data } = await downloadCsv(f);
+  setTokium(data, 'SharePoint ' + f.name);
+}
+async function graphLoadDb30() {
+  const re = CONFIG.graph.db30NameRe;
+  const f = await findLatestDated(CONFIG.graph.db30Search, re, 'tokium_loc_db30', CONFIG.graph.db30Folder);
+  if (!f) throw new Error(`SharePointに ${CONFIG.graph.db30Search}_YYYYMMDD.csv が見つかりません（場所：ドキュメント/${CONFIG.graph.db30Folder}）`);
+  const { headers, data } = await downloadCsv(f);
+  const ymd = f.name.match(re)[1];
+  setDb30(headers, data, `SharePoint ${f.name}（${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6)}版）`);
+}
+/* 年フォルダ → 顧客 → サブフォルダ → ファイル を幅優先で一覧。送り状・受領書などは中に入らない */
+async function graphScan(years) {
+  const D = await graphDrive(), base = CONFIG.graph.baseFolder;
+  const top = (await gGet(`/drives/${D}/root:/${encPath(base)}:/children?${SEL}`)).value;
+  const yearFolders = top.filter(i => i.folder && CONFIG.yearFolderRe.test(i.name) && years.includes(+i.name.match(CONFIG.yearFolderRe)[1])
+    && (CONFIG.receivedFolderRe.test(i.name) || /自社発行/.test(i.name)));
+  if (!yearFolders.length) throw new Error(`${base} の下に対象年の経理フォルダが見つかりません`);
+  const files = []; let skipped = 0, errors = 0, listed = 0;
+  let queue = yearFolders.map(y => ({ url: `/drives/${D}/items/${y.id}/children?${SEL}`, ctx: { path: [base, y.name], depth: 0, received: CONFIG.receivedFolderRe.test(y.name) } }));
+  while (queue.length) {
+    const results = await gBatch(queue, (n, t) => $('#gsProg').textContent = `フォルダ一覧 ${listed + n}件目… ファイル ${files.length.toLocaleString()}件`);
+    listed += results.length; queue = [];
+    for (const { req, status, body } of results) {
+      if (status !== 200) { errors++; continue; }
+      const { path, depth, received } = req.ctx;
+      for (const it of body.value) {
+        const p = [...path, it.name];
+        if (it.folder) {
+          // depth 0 の子=顧客、1 の子=サブフォルダ（ここで対象外を間引く）、2以降は入れ子（2段まで）
+          if (depth === 1) {
+            const want = received ? CONFIG.receivedPoSubRe.test(it.name) : !!CONFIG.folderRules.find(r => r.re.test(it.name))?.type;
+            if (!want) { skipped++; continue; }
+          }
+          if (depth <= 3) queue.push({ url: `/drives/${D}/items/${it.id}/children?${SEL}`, ctx: { path: p, depth: depth + 1, received } });
+        } else if (it.file) files.push({ it, rel: p.join('/') });
+      }
+      if (body['@odata.nextLink']) queue.push({ url: body['@odata.nextLink'], ctx: req.ctx });
+    }
+  }
+  return { files, skipped, errors, yearFolders: yearFolders.map(y => y.name) };
+}
+/* DB30のPO共有リンク → driveItem id（一度解決したものはブラウザに保存して再利用） */
+async function graphResolveShares() {
+  let cache = {}; try { cache = JSON.parse(lsGet('tokium_share_cache') || '{}'); } catch {}
+  const urls = [...new Set([...S.cases.values()].map(c => (c.row[CONFIG.db30.po] || '').trim()).filter(u => /^https:\/\/[^/]*sharepoint\.com\//.test(u)))];
+  const todo = urls.filter(u => !(u in cache));
+  if (todo.length) {
+    const enc = u => 'u!' + btoa(unescape(encodeURIComponent(u))).replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
+    const res = await gBatch(todo.map(u => ({ url: `/shares/${enc(u)}/driveItem?$select=id,name`, ctx: u })),
+      (n, t) => $('#gsProg').textContent = `顧客POの共有リンクを解決中… ${n}/${t}`);
+    for (const r of res) if (r.status === 200) cache[r.req.ctx] = r.body.id; else if (r.status === 404 || r.status === 403) cache[r.req.ctx] = '';
+    lsSet('tokium_share_cache', JSON.stringify(cache));
+  }
+  S.shareMap = Object.fromEntries(Object.entries(cache).filter(([, id]) => id));
+  return { total: urls.length, resolved: urls.filter(u => cache[u]).length };
+}
+$('#btnScan').onclick = async () => {
+  const years = [...document.querySelectorAll('#gsYears input:checked')].map(i => +i.value);
+  lsSet('tokium_years', JSON.stringify(years));
+  const st = $('#stGraph'), btn = $('#btnScan'); btn.disabled = true; st.className = 'st';
+  const t0 = Date.now();
+  try {
+    let rulesMsg = '';
+    if (CONFIG.graph.rulesPath) { $('#gsProg').textContent = 'ルールを読み込み中…'; rulesMsg = await graphLoadRules().catch(e => `⚠ルールファイルを読めません（${e.message}）`); }
+    $('#gsProg').textContent = 'DB30を読み込み中…'; await graphLoadDb30(); rebuild();
+    $('#gsProg').textContent = 'TOKIUM一覧を探しています…'; await graphLoadTokium().catch(e => console.warn(e)); rebuild();
+    $('#gsProg').textContent = '書類フォルダを一覧中…';
+    const scan = await graphScan(years);
+    S.rawFiles.clear();
+    for (const { it, rel } of scan.files) {
+      const p = parsePath(rel); if (!p) continue;
+      S.rawFiles.set(it.id, { ...p, id: it.id, rel, webUrl: it.webUrl, file: null, modified: it.lastModifiedDateTime });
+    }
+    rebuild();
+    const sh = await graphResolveShares(); rebuild();
+    G.ok = true; $('#modeLbl').textContent = `SharePoint：接続中（${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} 取得）`;
+    st.className = 'st ok';
+    st.textContent = `✓ ${S.db30Name}／書類 ${scan.files.length.toLocaleString()}件（${scan.yearFolders.join('、')}、対象外フォルダ ${scan.skipped}件は読まずにスキップ${scan.errors ? `、⚠読めなかったフォルダ ${scan.errors}件` : ''}）／顧客POリンク ${sh.resolved}/${sh.total}件解決／${Math.round((Date.now() - t0) / 1000)}秒${rulesMsg ? '／' + rulesMsg : ''}`;
+    $('#gsProg').textContent = '';
+    $('#loadBox').open = false;  // 読み込みが終わったら畳む（上の1行で状況は見える）
+  } catch (e) { st.className = 'st err'; st.textContent = '✗ ' + e.message; $('#gsProg').textContent = ''; }
+  btn.disabled = false;
+};
+(function yearsUI() {
+  let saved = []; try { saved = JSON.parse(lsGet('tokium_years') || '[]'); } catch {}
+  const now = new Date().getFullYear();
+  $('#gsYears').innerHTML = CONFIG.targetYears.map(y => `<label><input type="checkbox" value="${y}" ${(saved.length ? saved.includes(y) : y <= now) ? 'checked' : ''}>${y}</label>`).join('');
+})();
+
+/* ---------- 起動 ---------- */
+$('#userName').value = lsGet('tokium_user') || '';
+$('#rootPath').value = lsGet('tokium_root') || '';
+$('#userName').onchange = e => lsSet('tokium_user', e.target.value);
+$('#rootPath').onchange = e => lsSet('tokium_root', e.target.value);
+try { const saved = JSON.parse(lsGet('tokium_log_rows') || '[]'); if (saved.length) { S.log = saved; $('#stLog').className = 'st'; $('#stLog').textContent = `ブラウザに残っていた ${saved.length}行を復元（正本はCSV）`; } } catch {}
+// 配布版は build_tokium.py が DB30 を埋め込んでいる（window.TOKIUM_DB30）→ 自動で読み込む
+if (window.TOKIUM_DB30) {
+  const D = window.TOKIUM_DB30;
+  setDb30(D.headers, D.rows.map(r => Object.fromEntries(D.headers.map((h, i) => [h, r[i] ?? '']))), `自動（${D.sourceDate}版・${D.builtAt}作成）`);
+  $('#fDb30').title = '新しいCSVを手動で読み込むと上書きします';
+}
+try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 4) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
+  else if (tk) { $('#stTk').className = 'st err'; $('#stTk').textContent = `⚠ 前回読み込んだTOKIUM一覧（${tk.label}）は古い形式のため使っていません。TOKIUMのCSVをもう一度読み込んでください`; } } catch {}
+graphInit();
+{ const v = lsGet('tokium_loadbox'); if (v === 'closed') $('#loadBox').open = false; }
+$('#loadBox').addEventListener('toggle', () => lsSet('tokium_loadbox', $('#loadBox').open ? 'open' : 'closed'));
+rebuild();
+</script>
+</body>
+</html>
