@@ -37,7 +37,8 @@ button,.btn{font:inherit;border:1px solid var(--line);background:#fff;border-rad
 button:hover{background:var(--head)}
 button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 button.primary:disabled{opacity:.45;cursor:default}
-button.small{padding:1px 6px;font-size:11px}
+button.small,a.btn.small{padding:1px 6px;font-size:11px}
+a.btn{text-decoration:none;display:inline-block}
 input[type=text],select{font:inherit;border:1px solid var(--line);border-radius:4px;padding:3px 6px;background:#fff}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
@@ -313,6 +314,8 @@ const CONFIG = {
   // TOKIUMの国税関係書類の一覧ページ。検索語をURLに入れられる場合は {q} の形で書く（例：…?keyword={q}）。
   // {q} が無い場合は、D番号をクリップボードにコピーしてから一覧ページを開く
   tokiumSearchUrl: 'https://secure.keihi.com/payment_requests/national_tax_documents',
+  // Kintoneアプリの検索（{q}＝D番号）。空ならボタンを出さない
+  kintoneSearchUrl: 'https://uqtg9.cybozu.com/k/178/?sv_searchtext={q}',
   // 書類が不要な取引先（DB30の得意先名で判定）。ここに書いた書類は「不要」と表示し、登録対象から外す
   notRequired: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
   // 相手方が発行する書類：この取引先は「●相手」の登録があれば登録済とする（取引先コードの一致は問わない）
@@ -846,7 +849,7 @@ function openDrawer(c) {
     <dt>DB30 納品書・請求書欄</dt><dd>${db30Link(r[C.invoiceLink], /^請求書/, '請求書')}</dd>
   </dl>
   <h3>TOKIUMの登録</h3>${tkRows}
-  <div class="row" style="margin-top:6px"><button class="small primary" id="btnTkSearch" data-q="${esc(c.d)}">TOKIUMで ${esc(c.d)} を検索</button><span class="small muted" id="tkSearchMsg"></span></div>
+  <div class="row" style="margin-top:6px"><button class="small primary" id="btnTkSearch" data-q="${esc(c.d)}">TOKIUMで ${esc(c.d)} を検索</button>${CONFIG.kintoneSearchUrl ? `<a class="btn small" href="${esc(CONFIG.kintoneSearchUrl.replace('{q}', encodeURIComponent(c.d)))}" target="_blank" rel="noopener">Kintoneで ${esc(c.d)} を検索</a>` : ''}<span class="small muted" id="tkSearchMsg"></span></div>
   <h3 style="margin-top:14px">SharePointの書類ファイル</h3>`
   + DOC_TYPES.map(t => `<div class="small" style="font-weight:600;margin-top:6px">${t}</div>` + (c.docs[t].length ? c.docs[t].map(d => docItem(d)).join('') : '<div class="muted small">ファイルなし</div>')).join('');
   $('#drawer').classList.add('open');
