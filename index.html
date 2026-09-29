@@ -17,7 +17,7 @@ if (window.__msalPopup) document.documentElement.classList.add('msal-popup');
 :root{
   --bg:#f5f6f8; --panel:#fff; --ink:#1f2328; --sub:#5b6470; --line:#d9dde3; --head:#eef1f5;
   --accent:#2463c7; --accent-ink:#fff;
-  --st-none:#9aa3ad; --st-todo:#c8410b; --st-check:#b58100; --st-done-tmp:#2463c7; --st-done:#1a7f37; --st-rec:#5f7f2a; --st-ex:#8a8f96;
+  --st-none:#9aa3ad; --st-todo:#e11d48; --st-check:#b58100; --st-done-tmp:#2463c7; --st-done:#0b5d3b; --st-rec:#16a34a; --st-ex:#8a8f96;
 }
 *{box-sizing:border-box}
 body{margin:0;font:13px/1.5 "Yu Gothic UI","Meiryo",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
@@ -141,7 +141,7 @@ details summary{cursor:pointer}
   </div>
   <div class="ld" style="margin-bottom:8px">
     <div class="row"><b style="display:inline">TOKIUMの登録済み一覧（国税関係書類詳細CSV）</b>
-      <input type="file" id="fTk" accept=".csv"><span class="small muted">TOKIUMの書類一覧からCSV出力したもの。SharePointの「ドキュメント」に置けばサインイン時に自動で読みます</span></div>
+      <input type="file" id="fTk" accept=".csv"><span class="small muted">TOKIUMの書類一覧からCSV出力したもの。SharePointの「Claude_code_tools/TOKIUMツール」に置けば、開いたとき（サインイン済みなら）自動で読みます</span></div>
     <div class="st" id="stTk">未読込（読み込むまでは、見積書・納品書は「未確認」になります）</div>
   </div>
   <details id="manualBox"><summary class="small muted">手動読み込み・テスト用（DB30 CSV／ローカルフォルダ／共有リンク対応表）</summary>
@@ -710,7 +710,8 @@ function docCell(c, t) {
 }
 function updateLoadSummary() {
   const parts = [];
-  parts.push(G.account ? `✓ ${G.account.name || 'サインイン済み'}` : '未サインイン');
+  if (G.loading) parts.push('⏳ SharePointから読み込み中…');
+  parts.push(G.account ? `✓ ${G.account.name || 'サインイン済み'}` : '未サインイン（「サインイン」を押すと自動で読み込みます）');
   parts.push(S.db30Rows.length ? `DB30：${S.db30Name.replace(/^SharePoint |^手動読込 /, '')}` : 'DB30：未読込');
   parts.push(S.rawFiles.size ? `書類 ${S.rawFiles.size.toLocaleString()}件` : '書類：未読込');
   parts.push(S.tokium ? `TOKIUM一覧：${S.tokium.date || S.tokium.label}時点` : 'TOKIUM一覧：未読込');
@@ -1004,7 +1005,7 @@ function graphInit() {
   });
   G.pca.handleRedirectPromise().catch(() => {}).then(() => {
     const a = G.pca.getAllAccounts()[0];
-    if (a) setAccount(a);
+    if (a) { setAccount(a); autoLoad(); }  // サインイン済みなら、開いた時点でDB30・書類一覧・TOKIUM一覧を自動で読む
   });
 }
 function setAccount(a) {
@@ -1015,7 +1016,7 @@ function setAccount(a) {
   if (!$('#userName').value) { $('#userName').value = (a.name || '').split(/[\s　]/)[0]; lsSet('tokium_user', $('#userName').value); }
 }
 $('#btnSignIn').onclick = async () => {
-  try { setAccount((await G.pca.loginPopup({ scopes: CONFIG.graph.scopes, prompt: 'select_account' })).account); }
+  try { setAccount((await G.pca.loginPopup({ scopes: CONFIG.graph.scopes, prompt: 'select_account' })).account); autoLoad(); }
   catch (e) { $('#stGraph').className = 'st err'; $('#stGraph').textContent = 'サインイン失敗：' + e.message; }
 };
 async function gToken() {
@@ -1172,7 +1173,11 @@ async function graphResolveShares() {
   S.shareMap = Object.fromEntries(Object.entries(cache).filter(([, id]) => id));
   return { total: urls.length, resolved: urls.filter(u => cache[u]).length };
 }
+/* 自動読み込み（開いたとき・サインインしたとき）。読み込み中なら何もしない */
+function autoLoad() { if (!G.loading) $('#btnScan').onclick(); }
 $('#btnScan').onclick = async () => {
+  if (G.loading) return;
+  G.loading = true; updateLoadSummary();
   const years = [...document.querySelectorAll('#gsYears input:checked')].map(i => +i.value);
   lsSet('tokium_years', JSON.stringify(years));
   const st = $('#stGraph'), btn = $('#btnScan'); btn.disabled = true; st.className = 'st';
@@ -1198,6 +1203,7 @@ $('#btnScan').onclick = async () => {
     $('#loadBox').open = false;  // 読み込みが終わったら畳む（上の1行で状況は見える）
   } catch (e) { st.className = 'st err'; st.textContent = '✗ ' + e.message; $('#gsProg').textContent = ''; }
   btn.disabled = false;
+  G.loading = false; updateLoadSummary();
 };
 (function yearsUI() {
   let saved = []; try { saved = JSON.parse(lsGet('tokium_years') || '[]'); } catch {}
