@@ -317,6 +317,7 @@ const CONFIG = {
   // Kintoneアプリの検索（{q}＝D番号）。空ならボタンを出さない
   kintoneSearchUrl: 'https://uqtg9.cybozu.com/k/178/?sv_searchtext={q}',
   // 書類が不要な取引先（DB30の得意先名で判定）。ここに書いた書類は「不要」と表示し、登録対象から外す
+  // since：この日付以降の案件だけ不要（検収日(売上)、無ければ納品日で判定）。書かなければ全期間
   notRequired: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
   // 相手方が発行する書類：この取引先は「●相手」の登録があれば登録済とする（取引先コードの一致は問わない）
   //   例：納品書を相手方（顧客）が発行する取引先（2026-09 確認）
@@ -641,7 +642,8 @@ const extractQuote = name => { const m = name.match(CONFIG.quoteNoRe); return m 
 const extractDs = name => [...new Set([...name.matchAll(CONFIG.dNumberRe)].map(m => 'D' + m[1]))];
 const normName = s => String(s || '').trim().replace(/\.(pdf|xlsx?|csv)$/i, '').replace(/[\s　]/g, '').toLowerCase();
 /* セルの状態。書類ファイルが無くても、DB30にTOKIUMのURLがあれば「TOKIUM記録あり」 */
-const isNotRequired = (c, t) => CONFIG.notRequired.some(x => x.types.includes(t) && x.customer.test(c.row[CONFIG.db30.customer] || ''));
+const isNotRequired = (c, t) => CONFIG.notRequired.some(x => x.types.includes(t) && x.customer.test(c.row[CONFIG.db30.customer] || '')
+  && (!x.since || ymd(c.row[CONFIG.db30.salesDate] || c.row[CONFIG.db30.deliveryDate]) >= ymd(x.since)));
 function cellStatus(c, t) {
   const docs = c.docs[t];
   if (isNotRequired(c, t) && !docs.some(d => ['TOKIUM記録あり', '確定済', '登録済（未確定）'].includes(d.status)) && !tkList(c.d, t).length) return '不要';
@@ -1109,7 +1111,7 @@ async function graphLoadRules() {
   const meta = await gGet(`/drives/${D}/root:/${encPath(CONFIG.graph.rulesPath)}`);
   const res = await fetch(meta['@microsoft.graph.downloadUrl']); if (!res.ok) throw new Error('ルールファイルのダウンロード失敗 ' + res.status);
   const j = JSON.parse(new TextDecoder('utf-8').decode(await res.arrayBuffer()).replace(/^﻿/, ''));
-  const conv = a => (a || []).map(x => ({ customer: new RegExp(x.customer, 'i'), types: x.types || [] }));
+  const conv = a => (a || []).map(x => ({ customer: new RegExp(x.customer, 'i'), types: x.types || [], since: x.since || '' }));
   CONFIG.notRequired = conv(j.notRequired); CONFIG.customerIssued = conv(j.customerIssued);
   return `ルール ${CONFIG.notRequired.length + CONFIG.customerIssued.length}件`;
 }
