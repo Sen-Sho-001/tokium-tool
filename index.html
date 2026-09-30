@@ -97,6 +97,9 @@ td.doc .sub{font-size:10px;color:var(--sub);line-height:1.2}
 .cellPick input{margin:0;width:13px;height:13px;cursor:pointer}
 #selPop{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);width:min(760px,96vw);max-height:55vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0003;padding:10px 12px;z-index:9}
 #selPop table td,#selPop table th{font-size:12px}
+#filePick{position:fixed;left:50%;top:12vh;transform:translateX(-50%);width:min(900px,96vw);max-height:76vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0003;padding:10px 12px;z-index:11}
+#filePick td,#filePick th{font-size:12px}
+a.pickFile{color:#b35900;text-decoration:underline dotted}
 tr.hasSel>td{background:#fffbe0}
 td.doc.picked{box-shadow:inset 0 0 0 2px #e0a800}
 td.doc .pickTag{font-size:10px;color:#9a6a00;font-weight:700}
@@ -167,7 +170,7 @@ details summary{cursor:pointer}
       <div class="st" id="stDir">未読込（年フォルダごとに複数回追加できます）</div>
     </div>
     <div class="ld">
-      <b>③ 処理ログCSV</b>
+      <b>③ 処理ログCSV（サインイン中は共有ログに自動保存。ここは手動の読込・書き出し用）</b>
       <div class="row"><input type="file" id="fLog" accept=".csv"><button class="small" id="btnSaveLog">ログを保存</button></div>
       <div class="st" id="stLog">未読込</div>
     </div>
@@ -279,6 +282,10 @@ details summary{cursor:pointer}
 </main>
 
 <div id="selPop" class="hidden"><div class="row" style="margin-bottom:6px"><b>選択中の書類</b><span class="small muted" id="selPopNote"></span><button class="small" style="margin-left:auto" id="selPopClose">閉じる</button></div><div id="selPopBody"></div></div>
+<div id="filePick" class="hidden"><div class="row" style="margin-bottom:6px"><b id="fpTitle"></b><button class="small" style="margin-left:auto" id="fpClose">閉じる</button></div>
+  <div class="small muted" id="fpNote" style="margin-bottom:6px"></div>
+  <div class="row" style="margin-bottom:6px"><input type="text" id="fpQ" size="30" placeholder="ファイル名で絞り込み（番号など）"><label class="small"><input type="checkbox" id="fpAll"> 全顧客のフォルダから探す</label></div>
+  <div id="fpBody"></div></div>
 <aside id="drawer"><div class="hd"><b id="dwTitle"></b><button style="margin-left:auto" id="dwClose">閉じる</button></div><div class="bd" id="dwBody"></div></aside>
 
 <script>
@@ -306,7 +313,11 @@ const CONFIG = {
     db30Folder: '本社/バックアップ/サイボウズオフィスバックアップ/見積・発注・仕入販売BK(毎週_月曜日更新)',  // 「ドキュメント」ライブラリ内のパス（毎週月曜に更新）
     db30NameRe: /^db30_仕入販売管理BK_(\d{8})\.csv$/i,
     tokiumSearch: '国税関係書類詳細',
-    tokiumFolder: 'Claude_code_tools/TOKIUMツール',  // TOKIUMのCSV（国税関係書類詳細_YYYYMMDD.csv）を置く場所（「ドキュメント」内）。無ければ検索で探す
+    tokiumFolder: 'Claude_code_tools/TOKIUMツール',
+    // 処理ログの共有：各自が tokium_log_<アカウント>.csv に書き、開くときに全員分を読んで合わせる（同時保存でも消えない）
+    logFolder: 'Claude_code_tools/TOKIUMツール',
+    logNameRe: /^tokium_log_.+\.csv$/i,
+    writeScopes: ['Files.ReadWrite.All'],  // 保存のときだけ使う（読み込みは scopes の読み取り権限だけで動く）  // TOKIUMのCSV（国税関係書類詳細_YYYYMMDD.csv）を置く場所（「ドキュメント」内）。無ければ検索で探す
     tokiumNameRe: /^国税関係書類詳細_(\d{8})\.csv$/i,
     scopes: ['Files.Read.All', 'Sites.Read.All'],
     // 取引先ごとのルール（notRequired／customerIssued）をSharePointのJSONから読む場合のパス（「ドキュメント」内）。
@@ -364,7 +375,7 @@ const CONFIG = {
     { re: /^請求書_自己/, type: '請求書' },
     { re: /^請求書_●相手/, type: '請求書', needCustomer: true },
   ],
-  logColumns: ['logged_at','user','doc_type','d_number','quote_no','file_name','drive_item_id','match_method','partner','doc_date','amount','status','note'],
+  logColumns: ['logged_at','user','doc_type','d_number','quote_no','file_name','drive_item_id','match_method','partner','doc_date','amount','status','note','author','row_id'],
 };
 const DOC_TYPES = ['見積書','注文書','納品書','請求書'];
 const STATUS_ORDER = ['要確認','未登録','PDFなし','登録済（未確定）','TOKIUM記録あり','確定済'];  // 左ほど「要対応」
@@ -535,14 +546,19 @@ function parsePath(rel) {
 }
 
 /* ---------- 処理ログ ---------- */
+const newRowId = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const logKey = r => r.row_id || [r.logged_at, r.user, r.drive_item_id, r.d_number, r.status, r.match_method].join('|');
 function persistLog() {
   lsSet('tokium_log_rows', JSON.stringify(S.log));
-  $('#unsaved').textContent = S.logDirty ? '● 処理ログに未保存の変更があります（「ログを保存」でCSVに書き出し）' : '';
+  $('#unsaved').textContent = S.logDirty ? (G.account ? '● 共有ログへ保存中…' : '● 処理ログに未保存の変更があります（サインインすると共有ログに保存。「ログを保存」でCSVにも書き出せます）') : (S.logShared || '');
 }
 function appendLog(rows) {
   const now = new Date(); const iso = new Date(now - now.getTimezoneOffset() * 60000).toISOString().slice(0, 19) + '+09:00';
-  for (const r of rows) S.log.push(Object.fromEntries(CONFIG.logColumns.map(c => [c, c === 'logged_at' ? iso : c === 'user' ? ($('#userName').value || '') : (r[c] ?? '')])));
+  const me = (G.account?.username || '').toLowerCase();
+  for (const r of rows) S.log.push(Object.fromEntries(CONFIG.logColumns.map(c => [c,
+    c === 'logged_at' ? iso : c === 'user' ? ($('#userName').value || '') : c === 'author' ? me : c === 'row_id' ? newRowId() : (r[c] ?? '')])));
   S.logDirty = true; persistLog(); rebuild();
+  scheduleSharedSave();
 }
 $('#btnSaveLog').onclick = () => {
   const lines = [CONFIG.logColumns.join(',')].concat(S.log.map(r => CONFIG.logColumns.map(c => csvCell(r[c])).join(',')));
@@ -588,7 +604,12 @@ function rebuild() {
   // 状態は「ファイル×D番号」単位。キー＝drive_item_id|D番号（D番号なしの行は drive_item_id 単独）。ファイル名でも引けるようにする
   const latest = new Map(), latestD = new Map();
   const put = (k, r) => { if (!latest.has(k) || latest.get(k).logged_at <= r.logged_at) latest.set(k, r); };
+  // 手動の紐づけ（ファイル名の番号ミス等を担当者が直したもの）：ファイルID → D番号（'' は解除）。古い順に上書き
+  const manual = new Map();
+  [...S.log].filter(r => r.match_method === 'manual' && r.drive_item_id).sort((a, b) => a.logged_at < b.logged_at ? -1 : 1)
+    .forEach(r => { const d = ((r.d_number || '').toUpperCase().match(/D\d{4}/) || [''])[0]; d ? manual.set(r.drive_item_id, d) : manual.delete(r.drive_item_id); });  // 解除＝自動の紐づけに戻す
   for (const r of S.log) {
+    if (r.match_method === 'manual') continue;
     const ds = (r.d_number || '').toUpperCase().match(/D\d{4}/g) || [];
     for (const base of [r.drive_item_id, 'name:' + r.file_name].filter(x => x && x !== 'name:')) {
       if (ds.length) ds.forEach(d => put(`${base}|${d}`, r)); else put(base, r);
@@ -616,12 +637,15 @@ function rebuild() {
     const g = groups.get(key) || groups.set(key, { type, files: [] }).get(key);
     g.files.push(f);
   }
+  S.groupsAll = [...groups.values()];
   for (const g of groups.values()) {
     const pdf = g.files.find(f => CONFIG.pdfExt.test(f.name));
     const f = pdf || g.files[0];
     const doc = { id: f.id, type: g.type, name: f.name, rel: f.rel, file: f.file, webUrl: f.webUrl || '', year: f.year, customer: f.customer, sub: f.sub,
       hasPdf: !!pdf, others: g.files.filter(x => x !== f).map(x => x.name), dList: [], quote: '', method: '', reason: '' };
-    if (g.type === '見積書') {
+    if (manual.has(doc.id)) {
+      doc.dList = [manual.get(doc.id)]; doc.method = 'manual'; doc.quote = g.type === '見積書' ? extractQuote(f.name) : '';
+    } else if (g.type === '見積書') {
       doc.quote = extractQuote(f.name);
       if (!doc.quote) { doc.reason = '見積番号を読めない'; }
       else { const ds = S.quoteIndex.get(doc.quote); if (!ds) { S.excluded.push({ ...f, reason: '未受注の見積（DB30に見積Noなし）' }); continue; } doc.dList = ds; doc.method = 'filename'; }
@@ -743,7 +767,7 @@ function docCell(c, t) {
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>` : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cellPick}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cellPick}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -864,6 +888,7 @@ $('#tblCases').onclick = e => {
   // セル内の「登録する」チェック：その書類だけを選ぶ／外す（詳細画面は開かない）
   if (e.target.classList.contains('selCell')) { for (const d of c.docs[e.target.dataset.t].filter(selectable)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
   if (e.target.closest('.cellPick')) return;  // ラベル部分のクリック（チェックの切替はinput側で処理）
+  if (e.target.closest('.pickFile')) { e.preventDefault(); openFilePicker(c, e.target.closest('.pickFile').dataset.t); return; }
   if (e.target.closest('.openCase') || e.target.closest('td.doc')) { e.preventDefault(); openDrawer(c); }
 };
 $('#chkAllVisible').onchange = e => {
@@ -882,6 +907,48 @@ $('#tblUnm').onclick = e => {
   }
 };
 $('#btnSelClear').onclick = () => { S.selected.clear(); render(); };
+/* ファイルを手動で指定（ファイル名の番号違いなどで紐づかない書類を、案件に結びつける） */
+let fpCtx = null;
+function openFilePicker(c, t) {
+  fpCtx = { c, t }; $('#fpQ').value = ''; $('#fpAll').checked = false;
+  $('#fpTitle').textContent = `${c.d}（${c.row[CONFIG.db30.customer]}）の${t}を指定`;
+  $('#fpNote').textContent = `同じ種類（${t}）のPDFの一覧です。ファイル名の番号が違っていても、正しいファイルを選んで「この案件に紐づける」を押してください。紐づけは処理ログに記録されます（「ログを保存」でCSVにも残ります）。`;
+  $('#filePick').classList.remove('hidden'); renderFilePicker(); $('#fpQ').focus();
+}
+function renderFilePicker() {
+  if (!fpCtx) return;
+  const { c, t } = fpCtx, q = $('#fpQ').value.trim().toLowerCase(), all = $('#fpAll').checked;
+  const cu = coName(c.row[CONFIG.db30.customer]);
+  const sameCust = f => { const n = coName(f.customer); return n && cu && (cu.includes(n) || n.includes(cu)); };
+  const docById = new Map(S.docs.map(d => [d.id, d]));
+  const rows = (S.groupsAll || []).filter(g => g.type === t).map(g => g.files.find(f => CONFIG.pdfExt.test(f.name))).filter(Boolean)
+    .filter(f => (all || sameCust(f)) && (!q || f.name.toLowerCase().includes(q) || (f.rel || '').toLowerCase().includes(q)))
+    .sort((a, b) => b.name.localeCompare(a.name)).slice(0, 300);
+  const label = f => { const ds = S.docs.filter(d => d.id === f.id && d.dList.length).map(d => d.dList[0]); const d0 = docById.get(f.id);
+    if (ds.includes(c.d)) return '<span class="mk s-TOKIUM記録あり">この案件に紐づけ済み</span>';
+    if (ds.length) return `他の案件：${ds.join('、')}`;
+    if (d0) return `<span style="color:#b35900">未紐づけ</span>（${esc(d0.reason)}）`;
+    const ex = S.excluded.find(e => e.id === f.id); return ex ? `<span style="color:#b35900">対象外</span>（${esc(ex.reason)}）` : ''; };
+  $('#fpBody').innerHTML = rows.length ? `<table><thead><tr><th>ファイル</th><th>今の状態</th><th></th></tr></thead><tbody>${rows.map(f => `<tr data-id="${esc(f.id)}"><td><div>${esc(f.name)}</div><div class="small muted">${esc(f.rel)}</div></td><td class="small">${label(f)}</td><td style="white-space:nowrap">${f.webUrl || f.file ? '<button class="small fpOpen">開く</button> ' : ''}<button class="small primary fpLink">この案件に紐づける</button></td></tr>`).join('')}</tbody></table>`
+    : `<div class="muted small">候補がありません。${all ? '' : '「全顧客のフォルダから探す」も試してください。'}（書類一覧を読み込んだ年のフォルダだけが対象です）</div>`;
+}
+$('#fpClose').onclick = () => { $('#filePick').classList.add('hidden'); fpCtx = null; };
+$('#fpQ').oninput = renderFilePicker; $('#fpAll').onchange = renderFilePicker;
+$('#fpBody').onclick = e => {
+  const tr = e.target.closest('tr[data-id]'); if (!tr || !fpCtx) return;
+  const f = [...S.rawFiles.values()].find(x => x.id === tr.dataset.id); if (!f) return;
+  if (e.target.classList.contains('fpOpen')) { if (f.webUrl) window.open(f.webUrl, '_blank', 'noopener'); else if (f.file) { const u = URL.createObjectURL(f.file); window.open(u, '_blank'); } return; }
+  if (e.target.classList.contains('fpLink')) {
+    const { c, t } = fpCtx;
+    const cur = [...new Set(S.docs.filter(d => d.id === f.id && d.dList.length && d.dList[0] !== c.d).map(d => d.dList[0]))];
+    if (!confirm(`「${f.name}」を ${c.d} の${t}として紐づけますか？` + (cur.length ? `
+
+※このファイルは今 ${cur.join('、')} に紐づいています。付け替えると ${cur.join('、')} からは外れます。` : ''))) return;
+    appendLog([{ doc_type: t, d_number: c.d, quote_no: t === '見積書' ? extractQuote(f.name) : '', file_name: f.name, drive_item_id: f.id, match_method: 'manual', partner: c.row[CONFIG.db30.customer], status: '', note: '担当者がファイルを指定して紐づけ（ファイル名の番号違い等）' }]);
+    $('#filePick').classList.add('hidden'); fpCtx = null;
+    $('#copyMsg').textContent = `✓ ${c.d} の${t}に「${f.name}」を紐づけました（「ログを保存」でCSVにも残してください）`;
+  }
+};
 $('#btnSelList').onclick = () => { $('#selPop').classList.toggle('hidden'); renderSelPop(); };
 $('#selPopClose').onclick = () => $('#selPop').classList.add('hidden');
 $('#flSelOnly').onchange = render;
@@ -964,6 +1031,7 @@ function docItem(d) {
     <div class="row">${selectable(d) ? `<input type="checkbox" class="selDoc" ${S.selected.has(d.key) ? 'checked' : ''}>` : ''}
       <span class="badge b-${d.status}">${d.status}</span><span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
       <span style="margin-left:auto"></span>
+      ${d.method === 'manual' && d.dList.length ? '<button class="small unlinkF" title="手動で指定した紐づけを外す">紐づけ解除</button>' : ''}
       ${d.file || d.webUrl ? '<button class="small openF">開く</button>' : ''}
       ${['登録済（未確定）', 'TOKIUM記録あり'].includes(d.status) ? '<button class="small primary doConfirm">確定済にする</button>' : ''}
       ${['登録済（未確定）', '要確認', '確定済'].includes(d.status) ? '<button class="small doReset">未登録に戻す</button>' : ''}
@@ -981,6 +1049,14 @@ async function openTokiumSearch(q) {
   window.open(tpl, '_blank', 'noopener');
   return ok ? `「${q}」をコピーしました。TOKIUMの検索欄に貼り付けてください（Ctrl+V）` : 'コピーできませんでした';
 }
+$('#dwBody').addEventListener('click', e => {
+  if (!e.target.classList.contains('unlinkF')) return;
+  const d = S.docs.find(x => x.key === e.target.closest('.docitem')?.dataset.id); if (!d) return;
+  if (!confirm(`「${d.name}」の手動の紐づけ（${d.dList[0]}）を外しますか？
+（ファイル名から自動で判断した紐づけに戻ります）`)) return;
+  appendLog([{ doc_type: d.type, d_number: '', file_name: d.name, drive_item_id: d.id, match_method: 'manual', status: '', note: '手動の紐づけを解除' }]);
+  if (drawerCase) openDrawer(S.cases.get(drawerCase.d));
+});
 $('#dwBody').onclick = e => {
   if (e.target.id === 'btnTkSearch') { openTokiumSearch(e.target.dataset.q).then(m => $('#tkSearchMsg').textContent = m); return; }
   const it = e.target.closest('.docitem'); if (!it) return;
@@ -1157,6 +1233,45 @@ async function gToken() {
   try { return (await G.pca.acquireTokenSilent({ scopes: CONFIG.graph.scopes, account: G.account })).accessToken; }
   catch { return (await G.pca.acquireTokenPopup({ scopes: CONFIG.graph.scopes, account: G.account })).accessToken; }
 }
+async function gTokenWrite() {
+  try { return (await G.pca.acquireTokenSilent({ scopes: CONFIG.graph.writeScopes, account: G.account })).accessToken; }
+  catch { return (await G.pca.acquireTokenPopup({ scopes: CONFIG.graph.writeScopes, account: G.account })).accessToken; }
+}
+/* 共有ログ：自分の分（author＝自分）だけを自分のファイルに上書き保存 */
+function myLogFileName() { return 'tokium_log_' + (G.account?.username || 'unknown').toLowerCase().replace(/@.*/, '').replace(/[^a-z0-9._-]/g, '_') + '.csv'; }
+let saveTimer = null;
+function scheduleSharedSave() { if (!G.account || !G.pca) return; clearTimeout(saveTimer); saveTimer = setTimeout(() => saveSharedLog().catch(e => { S.logShared = '⚠ 共有ログに保存できません：' + e.message; persistLog(); }), 1200); }
+async function saveSharedLog() {
+  const me = (G.account?.username || '').toLowerCase();
+  const mine = S.log.filter(r => (r.author || '').toLowerCase() === me);
+  const csv = '\uFEFF' + [CONFIG.logColumns.join(',')].concat(mine.map(r => CONFIG.logColumns.map(c => csvCell(r[c])).join(','))).join('\r\n') + '\r\n';
+  const D = await graphDrive();
+  const res = await fetch(`${GRAPH}/drives/${D}/root:/${encPath(CONFIG.graph.logFolder + '/' + myLogFileName())}:/content`,
+    { method: 'PUT', headers: { Authorization: 'Bearer ' + await gTokenWrite(), 'Content-Type': 'text/csv' }, body: new Blob([csv], { type: 'text/csv' }) });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(`${res.status} ${j.error?.code || ''}（書き込みの権限を確認してください）`); }
+  S.logDirty = false;
+  S.logShared = `☁ 共有ログに保存しました（${myLogFileName()}、${mine.length}行、${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}）`;
+  persistLog();
+}
+/* 共有ログ：フォルダ内の tokium_log_*.csv を全員分読んで、手元のログと合わせる（同じ行は1つに） */
+async function graphLoadSharedLogs() {
+  const D = await graphDrive();
+  let items = [];
+  try { items = (await gGet(`/drives/${D}/root:/${encPath(CONFIG.graph.logFolder)}:/children?$top=999&$select=id,name,file`)).value.filter(i => i.file && CONFIG.graph.logNameRe.test(i.name)); } catch { return 0; }
+  // この機能より前に手元で付けた行（作成者なし）は、自分の行として共有ログに入れる
+  const me = (G.account?.username || '').toLowerCase();
+  for (const r of S.log) if (!r.author && me) { r.author = me; r.row_id = r.row_id || newRowId(); S.logDirty = true; }
+  const merged = new Map(S.log.map(r => [logKey(r), r]));
+  for (const f of items) {
+    const { data } = await downloadCsv({ ...f, driveId: D });
+    for (const r of data) if (!merged.has(logKey(r))) merged.set(logKey(r), r);
+  }
+  S.log = [...merged.values()].sort((a, b) => (a.logged_at || '').localeCompare(b.logged_at || ''));
+  lsSet('tokium_log_rows', JSON.stringify(S.log));
+  $('#stLog').className = 'st ok'; $('#stLog').textContent = `共有ログ ${items.length}人分を読み込み（計 ${S.log.length}行）`;
+  if (S.logDirty) scheduleSharedSave();  // 手元にだけある自分の行（サインイン前に追加した等）があれば共有ログへ保存
+  return items.length;
+}
 async function gGet(path) {
   for (let i = 0; i < 4; i++) {
     const r = await fetch(path.startsWith('http') ? path : GRAPH + path, { headers: { Authorization: 'Bearer ' + await gToken() } });
@@ -1321,6 +1436,7 @@ $('#btnScan').onclick = async () => {
     if (CONFIG.graph.rulesPath) { $('#gsProg').textContent = 'ルールを読み込み中…'; rulesMsg = await graphLoadRules().catch(e => `⚠ルールファイルを読めません（${e.message}）`); }
     $('#gsProg').textContent = 'DB30を読み込み中…'; await graphLoadDb30(); rebuild();
     $('#gsProg').textContent = 'TOKIUM一覧を探しています…'; await graphLoadTokium().catch(e => console.warn(e)); rebuild();
+    $('#gsProg').textContent = '共有ログを読み込み中…'; await graphLoadSharedLogs().catch(e => console.warn(e)); rebuild();
     $('#gsProg').textContent = '書類フォルダを一覧中…';
     const scan = await graphScan(years);
     S.rawFiles.clear();
