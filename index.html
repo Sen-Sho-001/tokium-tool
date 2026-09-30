@@ -90,6 +90,8 @@ td.doc .sub.ok{color:var(--st-done)}
 td.doc .sub{font-size:10px;color:var(--sub);line-height:1.2}
 .muted{color:var(--sub)}
 .small{font-size:11px}
+.pickbox{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;padding-right:10px;margin-right:4px;border-right:1px solid #e8d98a}
+.pickbox label{white-space:nowrap}
 .actionbar{position:sticky;bottom:0;background:#fffbe8;border:1px solid #e8d98a;border-radius:6px;padding:8px 12px;margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 #drawer{position:fixed;top:0;right:0;width:min(640px,100vw);height:100vh;background:#fff;border-left:1px solid var(--line);box-shadow:-6px 0 16px #0002;transform:translateX(105%);transition:transform .15s;z-index:10;display:flex;flex-direction:column}
 #drawer.open{transform:none}
@@ -239,6 +241,16 @@ details summary{cursor:pointer}
 </section>
 
 <div class="actionbar">
+  <span class="pickbox" title="いま一覧に表示している案件（上の絞り込み条件どおり）から、登録する書類をまとめて選びます">
+    <b>まとめて選ぶ</b>
+    <label><input type="checkbox" class="pickType" value="見積書" checked>見積書</label>
+    <label><input type="checkbox" class="pickType" value="注文書" checked>注文書</label>
+    <label><input type="checkbox" class="pickType" value="納品書" checked>納品書</label>
+    <label><input type="checkbox" class="pickType" value="請求書" checked>請求書</label>
+    <label><input type="checkbox" id="pickFileOnly" checked>ファイルありのみ</label>
+    <label>最大<input type="number" id="pickMax" value="5" min="1" max="200" style="width:48px">件</label>
+    <button id="btnPick">選ぶ</button>
+  </span>
   <b>選択中 <span id="selCount">0</span> 件</b>
   <button class="primary" id="btnCopy" disabled>Claudeへの指示文をコピー ＆ TOKIUMを開く</button>
   <button id="btnCopyOnly" disabled>指示文をコピーのみ</button>
@@ -814,6 +826,24 @@ $('#tblUnm').onclick = e => {
   }
 };
 $('#btnSelClear').onclick = () => { S.selected.clear(); render(); };
+/* まとめて選ぶ：表示中の案件（一覧の並び順）から、指定した種類・ファイルありの未登録書類を上から最大N件選ぶ（今の選択は置き換え） */
+$('#btnPick').onclick = () => {
+  const types = [...document.querySelectorAll('.pickType:checked')].map(x => x.value);
+  const fileOnly = $('#pickFileOnly').checked, max = Math.max(1, +$('#pickMax').value || 5);
+  if (!types.length) return alert('書類の種類を1つ以上選んでください');
+  S.selected.clear();
+  const picked = [];
+  for (const c of visibleCases) {
+    for (const t of types) for (const d of c.docs[t]) {
+      if (picked.length >= max) break;
+      if (selectable(d) && d.status !== '要確認' && (!fileOnly || d.hasPdf) && !picked.includes(d.key)) picked.push(d.key);
+    }
+    if (picked.length >= max) break;
+  }
+  picked.forEach(k => S.selected.add(k));
+  render();
+  $('#copyMsg').textContent = picked.length ? `${picked.length}件を選びました（${types.join('・')}${fileOnly ? '・ファイルありのみ' : ''}）` : '条件に合う未登録の書類がありません（上の絞り込み条件も確認してください）';
+};
 function openFile(doc) { if (doc.webUrl) return window.open(doc.webUrl, '_blank', 'noopener'); if (!doc.file) return; const u = URL.createObjectURL(doc.file); window.open(u, '_blank'); setTimeout(() => URL.revokeObjectURL(u), 60000); }
 
 /* ---------- 詳細ドロワー ---------- */
