@@ -360,6 +360,8 @@ const CONFIG = {
   // 書類が不要な取引先（DB30の得意先名で判定）。ここに書いた書類は「不要」と表示し、登録対象から外す
   // since：この日付以降の案件だけ不要（検収日(売上)、無ければ納品日で判定）。書かなければ全期間
   notRequired: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
+  // 顧客フォルダ名の別名：フォルダ名とDB30の得意先名の書き方が違うが同じ会社の組（ファイル名の番号で紐づけるとき、顧客の一致を確認するため）
+  folderAliases: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
   // 相手方が発行する書類：この取引先は「●相手」の登録があれば登録済とする（取引先コードの一致は問わない）
   //   例：納品書を相手方（顧客）が発行する取引先（2026-09 確認）
   customerIssued: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
@@ -458,6 +460,14 @@ const tkKindOf = raw => { const id = tkId(String(raw || '').split(',')[0]); retu
 const db30LinkCounts = (raw, re) => { if (!S.tokium?.kindByUrl) return true; const k = tkKindOf(raw); return !!k && re.test(k); };
 const db30UrlNotInCsv = raw => !!S.tokium?.kindByUrl && CONFIG.tokiumLinkRe.test(String(raw || '').split(',')[0]) && !tkKindOf(raw);
 const coName = s => nfkc(s).replace(/株式会社|\(株\)|（株）|\s/g, '');
+/* 顧客フォルダ名とDB30の得意先名が同じ会社か（株式会社・Inc.・記号などを除いて片方がもう片方を含む、または別名に登録済み） */
+const custKey = s => nfkc(s).toLowerCase().replace(/株式会社|有限会社|\(株\)|corporation|corp\.?|inc\.?|co\.,?\s*ltd\.?|ltd\.?|[\s・,.\-()（）'’]/g, '');
+function folderMatchesCustomer(folder, customer) {
+  if (!folder || !customer) return true;
+  const a = custKey(folder), b = custKey(customer);
+  if (a && b && (a.includes(b) || b.includes(a))) return true;
+  return CONFIG.folderAliases.some(x => x.folder.test(folder) && x.customer.test(customer));
+}
 /* 案件dの書類種別tについて、TOKIUMの登録を返す（●相手の書類は顧客のものだけ） */
 function tkList(d, t) {
   const list = S.tokium?.idx[d]?.[t] || []; if (!list.length) return list;
@@ -661,6 +671,14 @@ function rebuild() {
              if (!doc.dList.length) doc.reason = `DB30（対象年）にないD番号：${ds.join(', ')}`; }
     }
     doc.dList = doc.dList.filter(d => S.cases.has(d));
+    if (doc.method === 'filename' && doc.dList.length) {
+      const wrong = doc.dList.filter(d => !folderMatchesCustomer(doc.customer, S.cases.get(d).row[CONFIG.db30.customer]));
+      if (wrong.length) {
+        doc.dList = doc.dList.filter(d => !wrong.includes(d));
+        doc.custMismatch = wrong.map(d => `${d}（${S.cases.get(d).row[CONFIG.db30.customer]}）`);
+        if (!doc.dList.length) doc.reason = `顧客フォルダが違う：フォルダ「${doc.customer}」／ファイル名の番号の案件 ${doc.custMismatch.join('、')}`;
+      }
+    }
     if (!doc.dList.length && !doc.reason) doc.reason = 'DB30（対象年）に案件がない';
     if (!doc.hasPdf && !doc.dList.length) { S.excluded.push({ ...f, reason: 'Excel（案件に紐づかない）' }); continue; }
     // 状態は D番号ごとに判定する（同じ見積書を複数の受注で使っていても、案件ごとに登録が必要：2026-09 決定）
@@ -789,8 +807,13 @@ function renderRules() {
   });
   add('書類不要', CONFIG.notRequired, '「不要」と表示し、登録対象から外す');
   add('相手方発行', CONFIG.customerIssued, 'TOKIUMの「●相手」の登録があれば登録済み');
+  CONFIG.folderAliases.forEach(x => {
+    const custs = [...new Set([...S.cases.values()].map(c => c.row[C.customer]).filter(n => x.customer.test(n)))];
+    const folders = [...new Set([...S.rawFiles.values()].map(f => f.customer).filter(n => n && x.folder.test(n)))];
+    rows.push(`<tr><td>フォルダ別名<div class="small muted">ファイル名の番号で紐づけるとき、同じ会社として扱う</div></td><td>${custs.length ? custs.map(esc).join('<br>') : '<span class="muted">（該当なし）</span>'}<div class="small muted">条件：${esc(x.customer.source)}</div></td><td colspan="2">フォルダ名：${folders.length ? folders.map(esc).join('、') : '<span class="muted">（書類一覧を読み込むと表示）</span>'}<div class="small muted">条件：${esc(x.folder.source)}</div></td><td></td></tr>`);
+  });
   $('#tblRules tbody').innerHTML = rows.join('') || '<tr><td colspan="5" class="muted">ルールがありません（公開版はサインイン後にSharePointから読み込みます）</td></tr>';
-  $('#cntRules').textContent = CONFIG.notRequired.length + CONFIG.customerIssued.length;
+  $('#cntRules').textContent = CONFIG.notRequired.length + CONFIG.customerIssued.length + CONFIG.folderAliases.length;
   $('#rulesNote').textContent = CONFIG.graph.rulesPath
     ? `ルールの置き場所：SharePoint「ドキュメント/${CONFIG.graph.rulesPath}」（サインイン後に読み込み）。変更するときはツールの管理者に依頼してください。`
     : 'ルールはこのHTMLの設定（CONFIG.notRequired／customerIssued）に書かれています。';
@@ -1360,7 +1383,8 @@ async function graphLoadRules() {
   const j = JSON.parse(new TextDecoder('utf-8').decode(await res.arrayBuffer()).replace(/^﻿/, ''));
   const conv = a => (a || []).map(x => ({ customer: new RegExp(x.customer, 'i'), types: x.types || [], since: x.since || '' }));
   CONFIG.notRequired = conv(j.notRequired); CONFIG.customerIssued = conv(j.customerIssued);
-  return `ルール ${CONFIG.notRequired.length + CONFIG.customerIssued.length}件`;
+  CONFIG.folderAliases = (j.folderAliases || []).map(x => ({ folder: new RegExp(x.folder, 'i'), customer: new RegExp(x.customer, 'i') }));
+  return `ルール ${CONFIG.notRequired.length + CONFIG.customerIssued.length}件・別名 ${CONFIG.folderAliases.length}件`;
 }
 async function graphLoadTokium() {
   const f = await findLatestDated(CONFIG.graph.tokiumSearch, CONFIG.graph.tokiumNameRe, 'tokium_loc_tk', CONFIG.graph.tokiumFolder);
