@@ -462,14 +462,15 @@ function setTokium(data, label) {
     const uid = tkId(r['書類URL']); if (uid) kindByUrl[uid] = r['書類種別'] || '';
     const tt = CONFIG.tokiumTypes.find(x => x.re.test(r['書類種別'] || '')); if (!tt) continue;
     const t = tt.type;
-    const ds = [...new Set([...(r['メモ'] || '').matchAll(/D(\d{4})(?!\d)/g)].map(m => 'D' + m[1]))];
+    // D番号は書類タイトルとメモの両方から拾う（メモにD番号が無い登録や、全角「Ｄ」の登録があるため）
+    const ds = [...new Set([...nfkc((r['書類タイトル'] || '') + ' ' + (r['メモ'] || '')).matchAll(/D(\d{4})(?!\d)/g)].map(m => 'D' + m[1]))];
     const ent = { id: tkId(r['書類URL']), date: r['取引日'], amount: r['取引金額'], memo: r['メモ'], kind: r['書類種別'] };
     if (tt.needCustomer) Object.assign(ent, { partner: r['取引先名'], code: nfkc(r['取引先コード']), needCustomer: true });
     for (const d of ds) ((idx[d] ||= {})[t] ||= []).push(ent);
     if (ds.length) used++;
   }
   const m = label.match(/(\d{8})/);
-  S.tokium = { v: 4, idx, kindByUrl, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '' , rows: data.length, used };
+  S.tokium = { v: 5, idx, kindByUrl, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '' , rows: data.length, used };
   $('#stTk').className = 'st ok';
   $('#stTk').textContent = `${label}：${data.length.toLocaleString()}件（うち案件に紐づく ${used.toLocaleString()}件）${S.tokium.date ? `／${S.tokium.date}時点` : ''}`;
   try { localStorage.setItem('tokium_export_idx', JSON.stringify(S.tokium)); } catch { $('#stTk').textContent += '（ブラウザへの保存は容量不足でできませんでした。次回も読み込みが必要です）'; }
@@ -1331,7 +1332,7 @@ if (window.TOKIUM_DB30) {
   setDb30(D.headers, D.rows.map(r => Object.fromEntries(D.headers.map((h, i) => [h, r[i] ?? '']))), `自動（${D.sourceDate}版・${D.builtAt}作成）`);
   $('#fDb30').title = '新しいCSVを手動で読み込むと上書きします';
 }
-try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 4) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
+try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 5) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
   else if (tk) { $('#stTk').className = 'st err'; $('#stTk').textContent = `⚠ 前回読み込んだTOKIUM一覧（${tk.label}）は古い形式のため使っていません。TOKIUMのCSVをもう一度読み込んでください`; } } catch {}
 graphInit();
 { const v = lsGet('tokium_loadbox'); if (v === 'closed') $('#loadBox').open = false; }
