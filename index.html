@@ -92,6 +92,9 @@ td.doc .sub{font-size:10px;color:var(--sub);line-height:1.2}
 .small{font-size:11px}
 .pickbox{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;padding-right:10px;margin-right:4px;border-right:1px solid #e8d98a}
 .pickbox label{white-space:nowrap}
+.cellPick{display:inline-flex;align-items:center;gap:2px;font-size:10px;color:var(--sub);margin-top:2px;cursor:pointer;padding:0 4px;border-radius:3px}
+.cellPick:hover{background:#fff3c4}
+.cellPick input{margin:0;width:13px;height:13px;cursor:pointer}
 #selPop{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);width:min(760px,96vw);max-height:55vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0003;padding:10px 12px;z-index:9}
 #selPop table td,#selPop table th{font-size:12px}
 tr.hasSel>td{background:#fffbe0}
@@ -246,7 +249,7 @@ details summary{cursor:pointer}
 </section>
 
 <div class="actionbar">
-  <span class="pickbox" title="いま一覧に表示している案件（上の絞り込み条件どおり）から、登録する書類をまとめて選びます">
+  <span class="pickbox hidden" title="いま一覧に表示している案件（上の絞り込み条件どおり）から、登録する書類をまとめて選びます">
     <b>まとめて選ぶ</b>
     <label><input type="checkbox" class="pickType" value="見積書" checked>見積書</label>
     <label><input type="checkbox" class="pickType" value="注文書" checked>注文書</label>
@@ -731,7 +734,9 @@ function docCell(c, t) {
   const revNote = st === '要確認' && tkRef(c.d, t).length && !tkList(c.d, t).length && !(t === '請求書' && c.tokiumLink);
   const tip = t === '注文書' && (c.poState === 'empty' || c.poState === 'other') ? `（DB30のPO欄：${c.poState === 'empty' ? '空欄' : c.row[CONFIG.db30.po]}）` : '';
   const picked = ds.some(d => S.selected.has(d.key));
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>` : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${picked ? '<div class="pickTag">☑ 選択中</div>' : ''}</td>`;
+  const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
+  const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>` : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cellPick}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -831,6 +836,9 @@ $('#tblCases').onclick = e => {
   const tr = e.target.closest('tr[data-d]'); if (!tr) return;
   const c = S.cases.get(tr.dataset.d);
   if (e.target.classList.contains('selCase')) { for (const d of docsOfCase(c, DOC_TYPES)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
+  // セル内の「登録する」チェック：その書類だけを選ぶ／外す（詳細画面は開かない）
+  if (e.target.classList.contains('selCell')) { for (const d of c.docs[e.target.dataset.t].filter(selectable)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
+  if (e.target.closest('.cellPick')) return;  // ラベル部分のクリック（チェックの切替はinput側で処理）
   if (e.target.closest('.openCase') || e.target.closest('td.doc')) { e.preventDefault(); openDrawer(c); }
 };
 $('#chkAllVisible').onchange = e => {
