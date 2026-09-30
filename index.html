@@ -210,6 +210,7 @@ details summary{cursor:pointer}
   <div class="tab" data-tab="excluded">対象外<span class="cnt" id="cntEx">0</span></div>
   <div class="tab" data-tab="import">結果の取り込み</div>
   <div class="tab" data-tab="log">処理ログ<span class="cnt" id="cntLog">0</span></div>
+  <div class="tab" data-tab="rules">取引先ルール<span class="cnt" id="cntRules">0</span></div>
 </div>
 
 <section id="pane-list">
@@ -241,6 +242,11 @@ details summary{cursor:pointer}
   <textarea id="taImport" rows="8" placeholder="RESULT,納品書,D1234,,20260911_〇〇….pdf,〇〇株式会社,2026/09/11,720000,登録済,"></textarea>
   <div class="row" style="margin-top:6px"><button id="btnParse">プレビュー</button><button class="primary" id="btnApply" disabled>処理ログに反映</button><span id="impMsg" class="small"></span></div>
   <div id="impPreview" style="margin-top:8px"></div>
+</section>
+
+<section id="pane-rules" class="hidden panel">
+  <div class="small muted" id="rulesNote" style="margin-bottom:6px"></div>
+  <table id="tblRules"><thead><tr><th>区分</th><th>取引先（DB30の得意先名）</th><th>書類</th><th>期間</th><th>該当する案件</th></tr></thead><tbody></tbody></table>
 </section>
 
 <section id="pane-log" class="hidden">
@@ -748,8 +754,26 @@ function updateLoadSummary() {
   parts.push(S.tokium ? `TOKIUM一覧：${S.tokium.date || S.tokium.label}時点` : 'TOKIUM一覧：未読込');
   $('#loadSumText').textContent = parts.join('　／　');
 }
+/* 取引先ルールの一覧（書類不要／相手方発行）。該当する得意先名と案件数も出す */
+function renderRules() {
+  const C = CONFIG.db30, rows = [];
+  const add = (kind, list, note) => list.forEach(x => {
+    const cases = [...S.cases.values()].filter(c => x.customer.test(c.row[C.customer] || ''));
+    const inPeriod = x.since ? cases.filter(c => ymd(c.row[C.salesDate] || c.row[C.deliveryDate]) >= ymd(x.since)) : cases;
+    const names = [...new Set(cases.map(c => c.row[C.customer]))];
+    rows.push(`<tr><td>${kind}<div class="small muted">${note}</div></td><td>${names.length ? names.map(esc).join('<br>') : `<span class="muted">（該当なし）</span>`}<div class="small muted">条件：${esc(x.customer.source)}</div></td><td>${x.types.join('・')}</td><td>${x.since ? `${esc(x.since)} 以降` : '全期間'}${x.since ? '<div class="small muted">検収日（無ければ納品日）で判定</div>' : ''}</td><td class="num">${inPeriod.length}件${x.since ? `<div class="small muted">（全期間 ${cases.length}件）</div>` : ''}</td></tr>`);
+  });
+  add('書類不要', CONFIG.notRequired, '「不要」と表示し、登録対象から外す');
+  add('相手方発行', CONFIG.customerIssued, 'TOKIUMの「●相手」の登録があれば登録済み');
+  $('#tblRules tbody').innerHTML = rows.join('') || '<tr><td colspan="5" class="muted">ルールがありません（公開版はサインイン後にSharePointから読み込みます）</td></tr>';
+  $('#cntRules').textContent = CONFIG.notRequired.length + CONFIG.customerIssued.length;
+  $('#rulesNote').textContent = CONFIG.graph.rulesPath
+    ? `ルールの置き場所：SharePoint「ドキュメント/${CONFIG.graph.rulesPath}」（サインイン後に読み込み）。変更するときはツールの管理者に依頼してください。`
+    : 'ルールはこのHTMLの設定（CONFIG.notRequired／customerIssued）に書かれています。';
+}
 function render() {
   const C = CONFIG.db30;
+  renderRules();
   updateLoadSummary();
   // 集計（書類単位）
   const cnt = {}; for (const d of S.docs) if (d.dList.length) cnt[d.status] = (cnt[d.status] || 0) + 1;
@@ -830,7 +854,7 @@ $('#chips').onclick = e => {
 $('#tabs').onclick = e => { const t = e.target.closest('.tab'); if (t) showTab(t.dataset.tab); };
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
-  ['list', 'unmatched', 'excluded', 'import', 'log'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
+  ['list', 'unmatched', 'excluded', 'import', 'log', 'rules'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
 }
 const docsOfCase = (c, types = $('#flType').value ? [$('#flType').value] : DOC_TYPES) => types.flatMap(t => c.docs[t]).filter(selectable);
 $('#tblCases').onclick = e => {
