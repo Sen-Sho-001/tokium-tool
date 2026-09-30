@@ -142,7 +142,7 @@ details summary{cursor:pointer}
   <div class="ld" style="margin-bottom:8px">
     <div class="row"><b style="display:inline">TOKIUMの登録済み一覧（国税関係書類詳細CSV）</b>
       <input type="file" id="fTk" accept=".csv"><span class="small muted">TOKIUMの書類一覧からCSV出力したもの。SharePointの「Claude_code_tools/TOKIUMツール」に置けば、開いたとき（サインイン済みなら）自動で読みます</span></div>
-    <div class="st" id="stTk">未読込（読み込むまでは、見積書・納品書は「未確認」になります）</div>
+    <div class="st" id="stTk">未読込（サインインすると、TOKIUMツールフォルダの最新CSVを自動で読み込みます）</div>
   </div>
   <details id="manualBox"><summary class="small muted">手動読み込み・テスト用（DB30 CSV／ローカルフォルダ／共有リンク対応表）</summary>
   <div class="loaders" style="margin-top:6px">
@@ -899,30 +899,60 @@ $('#dwBody').onclick = e => {
 /* =====================================================================
    指示文
    ===================================================================== */
+/* TOKIUMへの登録指示文（手順を全部入れる方式：2026-09 決定）。
+   手順は実際のTOKIUM画面（国税関係書類 → 国税関係書類を登録する → 手入力）と、既存の登録の書き方に合わせてある */
+const TK_KIND = { '見積書': '見積書_自己', '注文書': '注文書_●相手(税抜)', '納品書': '納品書_自己', '請求書': '請求書_自己(税抜)' };
+function tkKindFor(d, c) {
+  if (c && CONFIG.customerIssued.some(x => x.types.includes(d.type) && x.customer.test(c.row[CONFIG.db30.customer] || ''))) return d.type + '_●相手';
+  return TK_KIND[d.type];
+}
+/* 注文番号（PO#）：ファイル名 → DB30のPO欄のファイル名 の順に探す */
+function poNoFor(d, c) {
+  const pick = s => (String(s || '').match(/PO[#＃]+\s*([^_\s]+)/i) || [])[1] || '';
+  return pick(d.name) || pick(((c && c.row[CONFIG.db30.po]) || '').split(',').slice(1).join(','));
+}
 function buildPrompt() {
-  const C = CONFIG.db30, root = $('#rootPath').value.trim().replace(/[\\\/]+$/, '');
+  const C = CONFIG.db30, root = $('#rootPath').value.trim().replace(/[\\/]+$/, '');
   const docs = S.docs.filter(d => S.selected.has(d.key));
   const lines = docs.map((d, i) => {
-    const r = S.cases.get(d.dList[0])?.row;
+    const D = d.dList[0] || '', c = D && S.cases.get(D), r = c && c.row;
     const path = d.webUrl ? `${d.rel}\n   SharePoint：${d.webUrl}` : root ? root + '\\' + d.rel.replace(/\//g, '\\') : d.rel;
     const fnDate = (d.name.match(/^(\d{4})(\d{2})(\d{2})_/) || []).slice(1).join('/');
-    let s = `${i + 1}. [${d.type}] ${d.dList.length ? d.dList.join('・') : 'D番号未特定'} / ファイル：${d.name}\n   保存場所：${path}`;
-    if (r) s += `\n   参考値（DB30）：取引先=${r[C.customer]} 見積No=${r[C.quote]} 金額=${fmtYen(r[C.amount])}円(税抜)／${fmtYen(r[C.amountTax])}円(税込) 納品日=${r[C.deliveryDate]} 検収日=${r[C.salesDate]}${fnDate ? ` ファイル名の日付=${fnDate}` : ''}`;
-    else s += `\n   → PDF内の見積No（M+数字）を読み取り、報告の quote_no に入れてください。取引先フォルダ：${d.customer}`;
-    return s;
+    const po = poNoFor(d, c), quote = d.quote || (r && quoteKey(r[C.quote])) || '';
+    let s = `${i + 1}. [${d.type}] ${D || 'D番号未特定'} ／ ファイル：${d.name}\n   保存場所：${path}`;
+    if (!r) return s + `\n   → 案件が未特定です。PDF内の見積No（M+数字）を読み取って報告の quote_no に入れ、登録はせず status を「要確認」にしてください。取引先フォルダ：${d.customer}`;
+    const title = d.type === '見積書' ? `${quote}_${D}` : `${D}_PO#${po || '（PDFの注文番号）'}`;
+    const memo = d.type === '納品書' || d.type === '請求書' ? `${title}（2行目に「品名(枚数)」 例：${r[C.item] || ''}）` : title;
+    const dateHint = { '見積書': `見積書の発行日${fnDate ? `（ファイル名では ${fnDate}）` : ''}`, '注文書': '注文書（PO）に記載の注文日', '納品書': `納品書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）`, '請求書': `請求書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）` }[d.type];
+    return s + `
+   書類種別＝${tkKindFor(d, c)}
+   書類タイトル＝${title}
+   取引日＝${dateHint}
+   取引先＝取引先コード ${r[C.custNo] || '（不明：取引先名で検索）'} で検索して選択（${r[C.customer]}）
+   取引金額＝${fmtYen(r[C.amount])}（税抜・JPY）　※税込 ${fmtYen(r[C.amountTax])}
+   メモ＝${memo}${d.sharedWith?.length ? `\n   ※同じファイルを ${d.sharedWith.join('・')} でも使っていますが、${D} の分として登録してください` : ''}`;
   });
-  return `TOKIUM入力スキルに従って、次の書類をTOKIUMに登録してください。
-確定ボタンは絶対に押さず、保存（未確定）で止めてください。
-書類は案件（D番号）ごとに登録します。同じファイルが別のD番号で登録済みでも、ここに書いたD番号の分は新しく登録してください。
-登録する前に、TOKIUMの書類一覧で「同じ書類種別」かつ「メモ欄に同じD番号」の書類が既に無いか検索し、あれば新しく登録せず status を「既存」として報告してください。
-メモ欄は既存の書き方に合わせて入力してください（見積書：「M番号_D番号」、注文書・納品書・請求書：「D番号_PO#注文番号 品名」）。このD番号がメモ欄に無いと、登録状況を照合できません。
+  return `TOKIUMに、次の書類を1件ずつ登録してください。
 
-対象：
+【手順（1件ごと）】
+1. 重複の確認：「国税関係書類一覧」の「指定した条件で検索」で、D番号（例：D9430）を検索する。同じ書類種別で、書類タイトルかメモに同じD番号がある登録が既にあれば、登録せず status を「既存」にする。
+2. 「国税関係書類を登録する」→「手入力」を開く。
+3. 左の枠に、指定のPDFをアップロードする（SharePointのリンクから開いてダウンロードしたPDF）。
+4. 下の値を入力する。
+   ・書類種別：「選択」から指定の種別を選ぶ
+   ・書類タイトル／メモ：指定どおり（メモは登録状況の照合に使うので、D番号を必ず入れる）
+   ・取引日：指定の日付（PDFの記載と照合）
+   ・取引先名：「選択」を押し、取引先コードで検索して選ぶ（登録番号は自動で入る）
+   ・取引金額：税抜の金額（通貨は JPY のまま）
+   ・所属部署：「営業グループ」のまま
+   ・ラベル：「未設定」のまま（「承認済」は担当者が確認してから付けるので、付けない）
+5. PDFの内容（取引先・金額・日付・注文番号）が指定の値と食い違うときは、登録せず status を「要確認」にし、note に違いを書く。
+6. 問題なければ「登録」を押す。
+
+【対象】
 ${lines.join('\n')}
 
-入力値は参考値（DB30）を優先し、PDFは照合に使ってください。
-PDFの内容と参考値が食い違う場合は入力せず「要確認」にしてください。
-最後に、1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は "" で囲む。status は「登録済」「既存」「要確認」のいずれか）：
+【最後に】1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は "" で囲む。status は「登録済」「既存」「要確認」のいずれか）：
 RESULT,<doc_type>,<d_number>,<quote_no>,<file_name>,<partner>,<doc_date>,<amount>,<status>,<note>`;
 }
 async function copyText(t) {
