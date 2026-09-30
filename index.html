@@ -92,6 +92,11 @@ td.doc .sub{font-size:10px;color:var(--sub);line-height:1.2}
 .small{font-size:11px}
 .pickbox{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;padding-right:10px;margin-right:4px;border-right:1px solid #e8d98a}
 .pickbox label{white-space:nowrap}
+#selPop{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);width:min(760px,96vw);max-height:55vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0003;padding:10px 12px;z-index:9}
+#selPop table td,#selPop table th{font-size:12px}
+tr.hasSel>td{background:#fffbe0}
+td.doc.picked{box-shadow:inset 0 0 0 2px #e0a800}
+td.doc .pickTag{font-size:10px;color:#9a6a00;font-weight:700}
 .actionbar{position:sticky;bottom:0;background:#fffbe8;border:1px solid #e8d98a;border-radius:6px;padding:8px 12px;margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 #drawer{position:fixed;top:0;right:0;width:min(640px,100vw);height:100vh;background:#fff;border-left:1px solid var(--line);box-shadow:-6px 0 16px #0002;transform:translateX(105%);transition:transform .15s;z-index:10;display:flex;flex-direction:column}
 #drawer.open{transform:none}
@@ -248,10 +253,13 @@ details summary{cursor:pointer}
     <label><input type="checkbox" class="pickType" value="納品書" checked>納品書</label>
     <label><input type="checkbox" class="pickType" value="請求書" checked>請求書</label>
     <label><input type="checkbox" id="pickFileOnly" checked>ファイルありのみ</label>
+    <label>D番号<input type="text" id="pickD" size="12" placeholder="空欄＝表示中から" title="D9436 のように入力（カンマ区切りで複数可）。入力したD番号の書類だけを選びます"></label>
     <label>最大<input type="number" id="pickMax" value="5" min="1" max="200" style="width:48px">件</label>
     <button id="btnPick">選ぶ</button>
   </span>
   <b>選択中 <span id="selCount">0</span> 件</b>
+  <button class="small" id="btnSelList">選択内容を見る</button>
+  <label class="small"><input type="checkbox" id="flSelOnly"> 選択中だけ表示</label>
   <button class="primary" id="btnCopy" disabled>Claudeへの指示文をコピー ＆ TOKIUMを開く</button>
   <button id="btnCopyOnly" disabled>指示文をコピーのみ</button>
   <button id="btnSelClear">選択解除</button>
@@ -261,6 +269,7 @@ details summary{cursor:pointer}
 
 </main>
 
+<div id="selPop" class="hidden"><div class="row" style="margin-bottom:6px"><b>選択中の書類</b><span class="small muted" id="selPopNote"></span><button class="small" style="margin-left:auto" id="selPopClose">閉じる</button></div><div id="selPopBody"></div></div>
 <aside id="drawer"><div class="hd"><b id="dwTitle"></b><button style="margin-left:auto" id="dwClose">閉じる</button></div><div class="bd" id="dwBody"></div></aside>
 
 <script>
@@ -695,6 +704,7 @@ function caseMatches(c) {
   const no = $('#flNo').value.trim().toUpperCase(); if (no && !c.d.includes(no) && !(r[C.quote] || '').toUpperCase().includes(no)) return false;
   const types = $('#flType').value ? [$('#flType').value] : DOC_TYPES;
   if ($('#flHasDoc').checked && !types.some(t => c.docs[t].length || cellStatus(c, t) !== 'なし')) return false;
+  if ($('#flSelOnly').checked && !DOC_TYPES.some(t => c.docs[t].some(d => S.selected.has(d.key)))) return false;
   const st = S.filterStatus || $('#flStatus').value;
   if (st === 'POリンクなし') { if (c.poState !== 'empty' && c.poState !== 'other') return false; }
   else if (st && !types.some(t => cellStatus(c, t) === st)) return false;
@@ -720,7 +730,8 @@ function docCell(c, t) {
     : ((t === '請求書' && c.invNotInCsv) || (t === '注文書' && c.poNotInCsv)) && st !== 'TOKIUM記録あり' ? 'DB30のURLがCSVに無い' : '';
   const revNote = st === '要確認' && tkRef(c.d, t).length && !tkList(c.d, t).length && !(t === '請求書' && c.tokiumLink);
   const tip = t === '注文書' && (c.poState === 'empty' || c.poState === 'other') ? `（DB30のPO欄：${c.poState === 'empty' ? '空欄' : c.row[CONFIG.db30.po]}）` : '';
-  return `<td class="doc" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>` : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}</td>`;
+  const picked = ds.some(d => S.selected.has(d.key));
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>` : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${picked ? '<div class="pickTag">☑ 選択中</div>' : ''}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -747,7 +758,8 @@ function render() {
   $('#tblCases tbody').innerHTML = visibleCases.slice(0, LIMIT).map(c => {
     const r = c.row; const sel = DOC_TYPES.flatMap(t => c.docs[t]).filter(selectable);
     const allOn = sel.length && sel.every(d => S.selected.has(d.key));
-    return `<tr data-d="${c.d}"><td>${sel.length ? `<input type="checkbox" class="selCase" ${allOn ? 'checked' : ''}>` : ''}</td>
+    const anySel = DOC_TYPES.some(t => c.docs[t].some(d => S.selected.has(d.key)));
+    return `<tr data-d="${c.d}"${anySel ? ' class="hasSel"' : ''}><td>${sel.length ? `<input type="checkbox" class="selCase" ${allOn ? 'checked' : ''}>` : ''}</td>
       <td><a href="#" class="openCase">${c.d}</a><div class="small muted">${esc(r[C.quote])}</div></td>
       <td class="cp" title="${esc(r[C.customer] + ' ／ ' + r[C.item])}"><div>${esc(r[C.customer])}</div><div class="small muted">${esc(r[C.item])}</div></td>
       <td class="num">${fmtYen(r[C.amount])}</td>
@@ -786,6 +798,17 @@ function poCandidates(doc) {
 function updateSel() {
   const n = S.selected.size;
   $('#selCount').textContent = n; $('#btnCopy').disabled = $('#btnCopyOnly').disabled = !n;
+  if (!$('#selPop').classList.contains('hidden')) renderSelPop();
+}
+/* 選択中の書類の一覧（D番号・種類・得意先・ファイル）。×で外せる */
+function renderSelPop() {
+  const docs = S.docs.filter(d => S.selected.has(d.key));
+  const ds = [...new Set(docs.map(d => d.dList[0] || '（未特定）'))];
+  $('#selPopNote').textContent = `　${docs.length}件／D番号 ${ds.length}件：${ds.join('、')}`;
+  $('#selPopBody').innerHTML = docs.length ? `<table><thead><tr><th>D番号</th><th>書類</th><th>得意先</th><th>ファイル</th><th></th></tr></thead><tbody>${docs.map(d => {
+    const r = S.cases.get(d.dList[0])?.row;
+    return `<tr data-key="${esc(d.key)}"><td><a href="#" class="spOpen">${esc(d.dList[0] || '（未特定）')}</a></td><td>${d.type}</td><td>${esc(r ? r[CONFIG.db30.customer] : d.customer)}</td><td class="small">${esc(d.name)}</td><td><button class="small spDel" title="選択から外す">×</button></td></tr>`;
+  }).join('')}</tbody></table>` : '<div class="muted small">選択している書類はありません</div>';
 }
 
 /* ---------- イベント ---------- */
@@ -807,7 +830,7 @@ const docsOfCase = (c, types = $('#flType').value ? [$('#flType').value] : DOC_T
 $('#tblCases').onclick = e => {
   const tr = e.target.closest('tr[data-d]'); if (!tr) return;
   const c = S.cases.get(tr.dataset.d);
-  if (e.target.classList.contains('selCase')) { for (const d of docsOfCase(c, DOC_TYPES)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); updateSel(); return; }
+  if (e.target.classList.contains('selCase')) { for (const d of docsOfCase(c, DOC_TYPES)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
   if (e.target.closest('.openCase') || e.target.closest('td.doc')) { e.preventDefault(); openDrawer(c); }
 };
 $('#chkAllVisible').onchange = e => {
@@ -826,23 +849,38 @@ $('#tblUnm').onclick = e => {
   }
 };
 $('#btnSelClear').onclick = () => { S.selected.clear(); render(); };
+$('#btnSelList').onclick = () => { $('#selPop').classList.toggle('hidden'); renderSelPop(); };
+$('#selPopClose').onclick = () => $('#selPop').classList.add('hidden');
+$('#flSelOnly').onchange = render;
+$('#selPopBody').onclick = e => {
+  const tr = e.target.closest('tr[data-key]'); if (!tr) return;
+  const doc = S.docs.find(d => d.key === tr.dataset.key);
+  if (e.target.classList.contains('spDel')) { S.selected.delete(tr.dataset.key); render(); }
+  if (e.target.classList.contains('spOpen')) { e.preventDefault(); const c = S.cases.get(doc?.dList[0]); if (c) openDrawer(c); }
+};
 /* まとめて選ぶ：表示中の案件（一覧の並び順）から、指定した種類・ファイルありの未登録書類を上から最大N件選ぶ（今の選択は置き換え） */
 $('#btnPick').onclick = () => {
   const types = [...document.querySelectorAll('.pickType:checked')].map(x => x.value);
   const fileOnly = $('#pickFileOnly').checked, max = Math.max(1, +$('#pickMax').value || 5);
+  // D番号を入力したときは、そのD番号の案件だけから選ぶ（表示中かどうか・最大件数は問わない）
+  const wantD = [...new Set(($('#pickD').value.toUpperCase().match(/D\d{4}/g) || []))];
+  const missing = wantD.filter(d => !S.cases.has(d));
+  const pool = wantD.length ? wantD.map(d => S.cases.get(d)).filter(Boolean) : visibleCases, limit = wantD.length ? Infinity : max;
   if (!types.length) return alert('書類の種類を1つ以上選んでください');
   S.selected.clear();
   const picked = [];
-  for (const c of visibleCases) {
+  for (const c of pool) {
     for (const t of types) for (const d of c.docs[t]) {
-      if (picked.length >= max) break;
+      if (picked.length >= limit) break;
       if (selectable(d) && d.status !== '要確認' && (!fileOnly || d.hasPdf) && !picked.includes(d.key)) picked.push(d.key);
     }
-    if (picked.length >= max) break;
+    if (picked.length >= limit) break;
   }
   picked.forEach(k => S.selected.add(k));
   render();
-  $('#copyMsg').textContent = picked.length ? `${picked.length}件を選びました（${types.join('・')}${fileOnly ? '・ファイルありのみ' : ''}）` : '条件に合う未登録の書類がありません（上の絞り込み条件も確認してください）';
+  const pickedD = [...new Set(S.docs.filter(d => S.selected.has(d.key)).map(d => d.dList[0]))];
+  $('#copyMsg').textContent = (picked.length ? `${picked.length}件を選びました（${pickedD.join('、')}／${types.join('・')}${fileOnly ? '・ファイルありのみ' : ''}）` : '条件に合う未登録の書類がありません（上の絞り込み条件も確認してください）')
+    + (missing.length ? `　※対象年に見つからないD番号：${missing.join('、')}` : '');
 };
 function openFile(doc) { if (doc.webUrl) return window.open(doc.webUrl, '_blank', 'noopener'); if (!doc.file) return; const u = URL.createObjectURL(doc.file); window.open(u, '_blank'); setTimeout(() => URL.revokeObjectURL(u), 60000); }
 
