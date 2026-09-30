@@ -985,7 +985,8 @@ function tkKindFor(d, c) {
 }
 /* 注文番号（PO#）：ファイル名 → DB30のPO欄のファイル名 の順に探す */
 function poNoFor(d, c) {
-  const pick = s => (String(s || '').match(/PO[#＃]+\s*([^_\s]+)/i) || [])[1] || '';
+  // 「PO#12345」「PO＃12345」のほか、「#」なしの「PO740234」も拾う
+  const pick = s => (String(s || '').match(/PO(?:[#＃]+\s*|(?=\d))([^_\s]+)/i) || [])[1] || '';
   return pick(d.name) || pick(((c && c.row[CONFIG.db30.po]) || '').split(',').slice(1).join(','));
 }
 function buildPrompt() {
