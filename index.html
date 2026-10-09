@@ -1156,6 +1156,18 @@ function poNoFor(d, c) {
   const pick = s => (String(s || '').match(/PO(?:[#＃]+\s*|(?=\d))([^_\s]+)/i) || [])[1] || '';
   return pick(d.name) || pick(((c && c.row[CONFIG.db30.po]) || '').split(',').slice(1).join(','));
 }
+/* 受注日（注文書＝POの日付）。見積書の取引日は「受注日」で登録する運用（2026年5月以降のTOKIUM登録で確認）
+   見積書を登録する時点ではPOはまだTOKIUMに無いので、POのファイル名の先頭の日付を使う（紐づいたPO PDF → DB30のPO欄のファイル名）。
+   見つからなければ、指示文でPOのPDFを開いて注文日を確認させる */
+function orderDateFor(c) {
+  if (!c) return null;
+  const fromName = n => { const m = String(n || '').match(/^(\d{4})(\d{2})(\d{2})_/); return m ? `${m[1]}/${m[2]}/${m[3]}` : ''; };
+  const poDoc = c.docs['注文書'].find(d => fromName(d.name));
+  if (poDoc) return { date: fromName(poDoc.name), src: `注文書のファイル名（${poDoc.name}）` };
+  const poName = (c.row[CONFIG.db30.po] || '').split(',').slice(1).join(',');
+  if (fromName(poName)) return { date: fromName(poName), src: `DB30のPO欄のファイル名（${poName}）` };
+  return null;
+}
 function buildPrompt() {
   const C = CONFIG.db30, root = $('#rootPath').value.trim().replace(/[\\/]+$/, '');
   const docs = S.docs.filter(d => S.selected.has(d.key));
@@ -1168,7 +1180,9 @@ function buildPrompt() {
     if (!r) return s + `\n   → 案件が未特定です。PDF内の見積No（M+数字）を読み取って報告の quote_no に入れ、登録はせず status を「要確認」にしてください。取引先フォルダ：${d.customer}`;
     const title = d.type === '見積書' ? `${quote}_${D}` : `${D}_PO#${po || '（PDFの注文番号）'}`;
     const memo = d.type === '納品書' || d.type === '請求書' ? `${title}（2行目に「品名(枚数)」 例：${r[C.item] || ''}）` : title;
-    const dateHint = { '見積書': `見積書の発行日${fnDate ? `（ファイル名では ${fnDate}）` : ''}`, '注文書': '注文書（PO）に記載の注文日', '納品書': `納品書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）`, '請求書': `請求書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）` }[d.type];
+    const od = orderDateFor(c);
+    const dateHint = { '見積書': od ? `受注日 ${od.date}（${od.src}）。見積書の発行日ではなく受注日で登録する` : `受注日（注文書＝POに記載の注文日をPDFで確認して入力。見積書の発行日ではない）${(() => { const po = c.docs['注文書'].find(x => x.webUrl); const link = po ? po.webUrl : ((c.row[CONFIG.db30.po] || '').split(',')[0].match(/^https?:\/\/\S+/) || [''])[0]; return link ? `\n     POのPDF：${link}` : ''; })()}`,
+      '注文書': od ? `注文日 ${od.date}（${od.src}。PDFの注文日と照合）` : '注文書（PO）に記載の注文日', '納品書': `納品書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）`, '請求書': `請求書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）` }[d.type];
     return s + `
    書類種別＝${tkKindFor(d, c)}
    書類タイトル＝${title}
@@ -1183,16 +1197,18 @@ function buildPrompt() {
 1. 重複の確認：「国税関係書類一覧」の「指定した条件で検索」で、D番号（例：D9430）を検索する。同じ書類種別で、書類タイトルかメモに同じD番号がある登録が既にあれば、登録せず status を「既存」にする。
 2. 「国税関係書類を登録する」→「手入力」を開く。
 3. 左の枠に、指定のPDFをアップロードする（SharePointのリンクから開いてダウンロードしたPDF）。
+   ・SharePointのPDFは新しいタブで開く。TOKIUMの作業タブでは他のページを開かない
 4. 下の値を入力する。
    ・書類種別：「選択」から指定の種別を選ぶ
    ・書類タイトル／メモ：指定どおり（メモは登録状況の照合に使うので、D番号を必ず入れる）
-   ・取引日：指定の日付（PDFの記載と照合）
+   ・取引日：指定の日付（PDFの記載と照合）。日付はキーボード入力せず、カレンダーから月を移動して日をクリックして選ぶ。選択後、欄に「2026/9/11」のように表示されていることを確認する
    ・取引先名：「選択」を押し、取引先コードで検索して選ぶ（登録番号は自動で入る）
    ・取引金額：税抜の金額（通貨は JPY のまま）
    ・所属部署：「営業グループ」のまま
    ・ラベル：「未設定」のまま（「承認済」は担当者が確認してから付けるので、付けない）
 5. PDFの内容（取引先・金額・日付・注文番号）が指定の値と食い違うときは、登録せず status を「要確認」にし、note に違いを書く。
 6. 問題なければ「登録」を押す。
+7. 登録後、「国税関係書類一覧」でD番号を検索し、一覧の行で 書類種別・書類タイトル・取引日・取引先コード・取引金額・メモ がすべて入っていることを確認する。空欄や違いがあれば行を開いて修正・保存し、もう一度一覧で確認する。確認が終わるまで status を「登録済」にしない
 
 【対象】
 ${lines.join('\n')}
