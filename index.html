@@ -489,7 +489,7 @@ function tkRef(d, t) {
   const counted = tkList(d, t), no = nfkc(r[CONFIG.db30.custNo]), nm = coName(r[CONFIG.db30.customer]);
   return (S.tokium?.idx[d]?.[t] || []).filter(x => x.needCustomer && !counted.includes(x) && (x.code ? x.code === no : coName(x.partner) === nm));
 }
-function setTokium(data, label) {
+function setTokium(data, label, ver = '') {
   const idx = {}; let used = 0;
   const kindByUrl = {};  // TOKIUMの書類URL末尾のID → 書類種別（DB30のリンクが何の書類を指しているか調べる用）
   for (const r of data) {
@@ -504,7 +504,7 @@ function setTokium(data, label) {
     if (ds.length) used++;
   }
   const m = label.match(/(\d{8})/);
-  S.tokium = { v: 5, idx, kindByUrl, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '' , rows: data.length, used };
+  S.tokium = { v: 5, ver, idx, kindByUrl, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '' , rows: data.length, used };
   $('#stTk').className = 'st ok';
   $('#stTk').textContent = `${label}：${data.length.toLocaleString()}件（うち案件に紐づく ${used.toLocaleString()}件）${S.tokium.date ? `／${S.tokium.date}時点` : ''}`;
   try { localStorage.setItem('tokium_export_idx', JSON.stringify(S.tokium)); } catch { $('#stTk').textContent += '（ブラウザへの保存は容量不足でできませんでした。次回も読み込みが必要です）'; }
@@ -725,7 +725,7 @@ const normName = s => String(s || '').trim().replace(/\.(pdf|xlsx?|csv)$/i, '').
 /* Kintone「CC・納品・請求書発行」：D番号ごとに送付資料（A1〜A5）のチェック。
    A1〜A5のどれかにチェックがあるレコードだけ「記入済み」とみなし、A2（納品書）・A3（請求書）が無ければ不要とする。
    （2026年6月以前のレコードはA1〜A5が全部空＝この欄を使っていなかったので、判断に使わない） */
-function setKintone(headers, data, label) {
+function setKintone(headers, data, label, ver = '') {
   const hD = '受注番号(D NO)', hs = n => headers.find(h => h.includes(`[${n}`)) || '';
   const cols = ['A1', 'A2', 'A3', 'A4', 'A5'].map(hs), h2 = hs('A2'), h3 = hs('A3');
   const byD = {};
@@ -741,7 +741,7 @@ function setKintone(headers, data, label) {
     e.n++;
   }
   const m = label.match(/(\d{8})/);
-  S.kintone = { v: 1, byD, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '', rows: data.length, filled };
+  S.kintone = { v: 1, ver, byD, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '', rows: data.length, filled };
   $('#stKt').className = 'st ok';
   $('#stKt').textContent = `${label}：${data.length}件（送付資料を記入済み ${filled}件・D番号 ${Object.keys(byD).length}件）`;
   lsSet('tokium_kintone', JSON.stringify(S.kintone));
@@ -829,7 +829,7 @@ function docCell(c, t) {
 }
 function updateLoadSummary() {
   const parts = [];
-  if (G.loading) parts.push('⏳ SharePointから読み込み中…');
+  if (G.loading) parts.push(S.snapshotAt ? '⏳ 前回のデータを表示中・最新を確認中…' : '⏳ SharePointから読み込み中…');
   parts.push(G.account ? `✓ ${G.account.name || 'サインイン済み'}` : '未サインイン（「サインイン」を押すと自動で読み込みます）');
   parts.push(S.db30Rows.length ? `DB30：${S.db30Name.replace(/^SharePoint |^手動読込 /, '')}` : 'DB30：未読込');
   parts.push(S.rawFiles.size ? `書類 ${S.rawFiles.size.toLocaleString()}件` : '書類：未読込');
@@ -1298,7 +1298,7 @@ function graphInit() {
   });
   G.pca.handleRedirectPromise().catch(() => {}).then(() => {
     const a = G.pca.getAllAccounts()[0];
-    if (a) { setAccount(a); autoLoad(); }  // サインイン済みなら、開いた時点でDB30・書類一覧・TOKIUM一覧を自動で読む
+    if (a) { setAccount(a); autoLoad(); }  // サインイン済みなら、キャッシュを表示したうえで裏で最新を確認する
   });
 }
 function setAccount(a) {
@@ -1408,10 +1408,10 @@ async function graphDrive() {
 async function findLatestDated(searchText, re, cacheKey, folderPath) {
   const D = await graphDrive();
   const pick = items => items.filter(i => i.file && re.test(i.name)).sort((a, b) => a.name.match(re)[1].localeCompare(b.name.match(re)[1])).pop();
-  const list = async (driveId, folderId) => pick((await gGet(`/drives/${driveId}/items/${folderId}/children?$top=999&$select=id,name,file`)).value);
+  const list = async (driveId, folderId) => pick((await gGet(`/drives/${driveId}/items/${folderId}/children?$top=999&$select=id,name,file,lastModifiedDateTime`)).value);
   // ① 設定のフォルダパスを直接一覧（いちばん確実）
   if (folderPath) {
-    try { const f = pick((await gGet(`/drives/${D}/root:/${encPath(folderPath)}:/children?$top=999&$select=id,name,file`)).value); if (f) return { ...f, driveId: D }; } catch {}
+    try { const f = pick((await gGet(`/drives/${D}/root:/${encPath(folderPath)}:/children?$top=999&$select=id,name,file,lastModifiedDateTime`)).value); if (f) return { ...f, driveId: D }; } catch {}
   }
   // ② 前回見つけたフォルダ
   let loc = null; try { loc = JSON.parse(lsGet(cacheKey) || 'null'); } catch {}
@@ -1446,23 +1446,64 @@ async function graphLoadRules() {
   CONFIG.folderAliases = (j.folderAliases || []).map(x => ({ folder: new RegExp(x.folder, 'i'), customer: new RegExp(x.customer, 'i') }));
   return `ルール ${CONFIG.notRequired.length + CONFIG.customerIssued.length}件・別名 ${CONFIG.folderAliases.length}件`;
 }
+/* ===== 読み込んだデータのキャッシュ（ブラウザのIndexedDB）。開いたらすぐ表示し、裏で最新を確認する ===== */
+function idb() {
+  return new Promise((ok, ng) => { const r = indexedDB.open('tokium_tool', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => ok(r.result); r.onerror = () => ng(r.error); });
+}
+async function idbGet(k) { try { const db = await idb(); return await new Promise(ok => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => ok(q.result); q.onerror = () => ok(null); }); } catch { return null; } }
+async function idbSet(k, v) { try { const db = await idb(); await new Promise(ok => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = ok; t.onerror = ok; }); } catch {} }
+async function saveSnapshot() {
+  const C = CONFIG.db30, cols = [...new Set(Object.values(C))];
+  const minY = Math.min(...CONFIG.targetYears);
+  const rows = S.db30Rows.filter(r => /^D\d+$/i.test(r[C.d] || '') && +((r[C.deliveryDate] || r[C.salesDate] || '').slice(0, 4)) >= minY).map(r => cols.map(c => r[c] ?? ''));
+  const reSrc = a => a.map(x => ({ ...x, customer: x.customer?.source, folder: x.folder?.source }));
+  await idbSet('snapshot', { v: 1, savedAt: new Date().toISOString(), account: G.account?.username || '',
+    db30: { name: S.db30Name, ver: S.db30Ver || '', cols, rows },
+    files: [...S.rawFiles.values()].map(f => ({ ...f, file: null })),
+    rules: { notRequired: reSrc(CONFIG.notRequired), customerIssued: reSrc(CONFIG.customerIssued), folderAliases: reSrc(CONFIG.folderAliases) },
+    shareMap: S.shareMap, scanMsg: $('#stGraph').textContent });
+}
+async function restoreSnapshot() {
+  const sn = await idbGet('snapshot');
+  if (!sn || sn.v !== 1 || !sn.db30?.rows?.length) return false;
+  S.db30Rows = sn.db30.rows.map(r => Object.fromEntries(sn.db30.cols.map((c, i) => [c, r[i]])));
+  S.db30Name = sn.db30.name; S.db30Ver = sn.db30.ver;
+  $('#stDb30').className = 'st'; $('#stDb30').textContent = `${sn.db30.name}（キャッシュ）`;
+  S.rawFiles.clear(); for (const f of sn.files || []) S.rawFiles.set(f.id, f);
+  const re = (a, k) => (a || []).map(x => ({ ...x, [k]: new RegExp(x[k], 'i'), ...(x.folder ? { folder: new RegExp(x.folder, 'i') } : {}) }));
+  if (sn.rules && CONFIG.graph.rulesPath) {  // 公開版はルールもキャッシュから（原本はHTMLに書いたルールを使う）
+    CONFIG.notRequired = re(sn.rules.notRequired, 'customer'); CONFIG.customerIssued = re(sn.rules.customerIssued, 'customer');
+    CONFIG.folderAliases = (sn.rules.folderAliases || []).map(x => ({ folder: new RegExp(x.folder, 'i'), customer: new RegExp(x.customer, 'i') }));
+  }
+  if (sn.shareMap) S.shareMap = sn.shareMap;
+  S.snapshotAt = sn.savedAt;
+  const t = new Date(sn.savedAt);
+  $('#stGraph').className = 'st'; $('#stGraph').textContent = `📦 前回取得したデータ（${t.toLocaleDateString('ja-JP')} ${t.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}）を表示中。${sn.scanMsg ? '（' + sn.scanMsg.replace(/^✓\s*/, '') + '）' : ''}`;
+  return true;
+}
+/* ファイルの版（名前＋更新日時）。前回読んだ版と同じならダウンロードしない（1日1回しか変わらないため） */
+const fileVer = f => `${f.name}|${f.lastModifiedDateTime || ''}`;
 async function graphLoadKintone() {
   const f = await findLatestDated(CONFIG.graph.kintoneSearch, CONFIG.graph.kintoneNameRe, 'tokium_loc_kt', CONFIG.graph.tokiumFolder);
   if (!f) return;
+  if (S.kintone?.ver === fileVer(f)) return 'unchanged';
   const { headers, data } = await downloadCsv(f);
-  setKintone(headers, data, 'SharePoint ' + f.name);
+  setKintone(headers, data, 'SharePoint ' + f.name, fileVer(f));
 }
 async function graphLoadTokium() {
   const f = await findLatestDated(CONFIG.graph.tokiumSearch, CONFIG.graph.tokiumNameRe, 'tokium_loc_tk', CONFIG.graph.tokiumFolder);
   if (!f) return;
+  if (S.tokium?.ver === fileVer(f)) return 'unchanged';
   const { data } = await downloadCsv(f);
-  setTokium(data, 'SharePoint ' + f.name);
+  setTokium(data, 'SharePoint ' + f.name, fileVer(f));
 }
 async function graphLoadDb30() {
   const re = CONFIG.graph.db30NameRe;
   const f = await findLatestDated(CONFIG.graph.db30Search, re, 'tokium_loc_db30', CONFIG.graph.db30Folder);
   if (!f) throw new Error(`SharePointに ${CONFIG.graph.db30Search}_YYYYMMDD.csv が見つかりません（場所：ドキュメント/${CONFIG.graph.db30Folder}）`);
+  if (S.db30Ver === fileVer(f) && S.db30Rows.length) return 'unchanged';
   const { headers, data } = await downloadCsv(f);
+  S.db30Ver = fileVer(f);
   const ymd = f.name.match(re)[1];
   setDb30(headers, data, `SharePoint ${f.name}（${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6)}版）`);
 }
@@ -1524,9 +1565,10 @@ $('#btnScan').onclick = async () => {
   try {
     let rulesMsg = '';
     if (CONFIG.graph.rulesPath) { $('#gsProg').textContent = 'ルールを読み込み中…'; rulesMsg = await graphLoadRules().catch(e => `⚠ルールファイルを読めません（${e.message}）`); }
-    $('#gsProg').textContent = 'DB30を読み込み中…'; await graphLoadDb30(); rebuild();
-    $('#gsProg').textContent = 'TOKIUM一覧を探しています…'; await graphLoadTokium().catch(e => console.warn(e)); rebuild();
-    $('#gsProg').textContent = 'Kintoneの送付資料を読み込み中…'; await graphLoadKintone().catch(e => console.warn(e)); rebuild();
+    const same = [];
+    $('#gsProg').textContent = 'DB30を確認中…'; if (await graphLoadDb30() === 'unchanged') same.push('DB30'); else rebuild();
+    $('#gsProg').textContent = 'TOKIUM一覧を確認中…'; if (await graphLoadTokium().catch(e => console.warn(e)) === 'unchanged') same.push('TOKIUM一覧'); else rebuild();
+    $('#gsProg').textContent = 'Kintoneの送付資料を確認中…'; if (await graphLoadKintone().catch(e => console.warn(e)) === 'unchanged') same.push('Kintone'); else rebuild();
     $('#gsProg').textContent = '共有ログを読み込み中…'; await graphLoadSharedLogs().catch(e => console.warn(e)); rebuild();
     $('#gsProg').textContent = '書類フォルダを一覧中…';
     const scan = await graphScan(years);
@@ -1541,7 +1583,9 @@ $('#btnScan').onclick = async () => {
     st.className = 'st ok';
     st.textContent = `✓ ${S.db30Name}／書類 ${scan.files.length.toLocaleString()}件（${scan.yearFolders.join('、')}、対象外フォルダ ${scan.skipped}件は読まずにスキップ${scan.errors ? `、⚠読めなかったフォルダ ${scan.errors}件` : ''}）／顧客POリンク ${sh.resolved}/${sh.total}件解決／${Math.round((Date.now() - t0) / 1000)}秒${rulesMsg ? '／' + rulesMsg : ''}`;
     $('#gsProg').textContent = '';
+    if (same.length) st.textContent += `／変更なし：${same.join('・')}（キャッシュを使用）`;
     $('#loadBox').open = false;  // 読み込みが終わったら畳む（上の1行で状況は見える）
+    saveSnapshot();
   } catch (e) { st.className = 'st err'; st.textContent = '✗ ' + e.message; $('#gsProg').textContent = ''; }
   btn.disabled = false;
   G.loading = false; updateLoadSummary();
@@ -1567,7 +1611,8 @@ if (window.TOKIUM_DB30) {
 try { const kt = JSON.parse(lsGet('tokium_kintone') || 'null'); if (kt && kt.v === 1) { S.kintone = kt; $('#stKt').className = 'st'; $('#stKt').textContent = `前回読み込んだ ${kt.label} を使用中`; } } catch {}
 try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 5) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
   else if (tk) { $('#stTk').className = 'st err'; $('#stTk').textContent = `⚠ 前回読み込んだTOKIUM一覧（${tk.label}）は古い形式のため使っていません。TOKIUMのCSVをもう一度読み込んでください`; } } catch {}
-graphInit();
+// 前回のデータをすぐ表示（裏の最新確認より先に）
+restoreSnapshot().then(okSnap => { if (okSnap) { rebuild(); updateLoadSummary(); } }).finally(() => graphInit());
 { const v = lsGet('tokium_loadbox'); if (v === 'closed') $('#loadBox').open = false; }
 $('#loadBox').addEventListener('toggle', () => lsSet('tokium_loadbox', $('#loadBox').open ? 'open' : 'closed'));
 rebuild();
