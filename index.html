@@ -156,6 +156,9 @@ details summary{cursor:pointer}
     <div class="row"><b style="display:inline">TOKIUMの登録済み一覧（国税関係書類詳細CSV）</b>
       <input type="file" id="fTk" accept=".csv"><span class="small muted">TOKIUMの書類一覧からCSV出力したもの。SharePointの「Claude_code_tools/TOKIUMツール」に置けば、開いたとき（サインイン済みなら）自動で読みます</span></div>
     <div class="st" id="stTk">未読込（サインインすると、TOKIUMツールフォルダの最新CSVを自動で読み込みます）</div>
+    <div class="row" style="margin-top:6px"><b style="display:inline">Kintone「CC・納品・請求書発行」CSV（送付資料のチェック）</b>
+      <input type="file" id="fKt" accept=".csv"><span class="small muted">「お得意先様 送付資料」の [A2 納品書]・[A3 請求書] に 1 があれば必要、無ければ不要として扱います。TOKIUMツールフォルダに置けば自動で読みます</span></div>
+    <div class="st" id="stKt">未読込</div>
   </div>
   <details id="manualBox"><summary class="small muted">手動読み込み・テスト用（DB30 CSV／ローカルフォルダ／共有リンク対応表）</summary>
   <div class="loaders" style="margin-top:6px">
@@ -319,6 +322,8 @@ const CONFIG = {
     logNameRe: /^tokium_log_.+\.csv$/i,
     writeScopes: ['Files.ReadWrite.All'],  // 保存のときだけ使う（読み込みは scopes の読み取り権限だけで動く）  // TOKIUMのCSV（国税関係書類詳細_YYYYMMDD.csv）を置く場所（「ドキュメント」内）。無ければ検索で探す
     tokiumNameRe: /^国税関係書類詳細_(\d{8})\.csv$/i,
+    kintoneSearch: 'CC・納品・請求書発行',
+    kintoneNameRe: /^CC・納品・請求書発行.*?_(\d{8})T?[\d+]*.*\.csv$/i,  // Kintoneの書き出し名（例 …ver1.0_20261009T131942+0900.csv）
     scopes: ['Files.Read.All', 'Sites.Read.All'],
     // 取引先ごとのルール（notRequired／customerIssued）をSharePointのJSONから読む場合のパス（「ドキュメント」内）。
     // 空なら、このファイルに書いたルールを使う（GitHub公開版は取引先名を載せないため、ここを指定して読む）
@@ -436,6 +441,8 @@ async function loadCsvFile(file) {
   const { headers, data } = toObjects(parseCSV(decodeCSV(await file.arrayBuffer())));
   if (headers.includes(CONFIG.db30.d)) {
     setDb30(headers, data, `手動読込 ${file.name}`);
+  } else if (headers.includes('受注番号(D NO)') && headers.some(h => /\[A2 納品書\]/.test(h))) {
+    setKintone(headers, data, file.name);
   } else if (headers.includes('書類種別') && headers.includes('書類URL')) {
     setTokium(data, file.name);
   } else if (headers.includes('drive_item_id')) {
@@ -715,8 +722,40 @@ const extractQuote = name => { const m = name.match(CONFIG.quoteNoRe); return m 
 const extractDs = name => [...new Set([...name.matchAll(CONFIG.dNumberRe)].map(m => 'D' + m[1]))];
 const normName = s => String(s || '').trim().replace(/\.(pdf|xlsx?|csv)$/i, '').replace(/[\s　]/g, '').toLowerCase();
 /* セルの状態。書類ファイルが無くても、DB30にTOKIUMのURLがあれば「TOKIUM記録あり」 */
-const isNotRequired = (c, t) => CONFIG.notRequired.some(x => x.types.includes(t) && x.customer.test(c.row[CONFIG.db30.customer] || '')
-  && (!x.since || ymd(c.row[CONFIG.db30.salesDate] || c.row[CONFIG.db30.deliveryDate]) >= ymd(x.since)));
+/* Kintone「CC・納品・請求書発行」：D番号ごとに送付資料（A1〜A5）のチェック。
+   A1〜A5のどれかにチェックがあるレコードだけ「記入済み」とみなし、A2（納品書）・A3（請求書）が無ければ不要とする。
+   （2026年6月以前のレコードはA1〜A5が全部空＝この欄を使っていなかったので、判断に使わない） */
+function setKintone(headers, data, label) {
+  const hD = '受注番号(D NO)', hs = n => headers.find(h => h.includes(`[${n}`)) || '';
+  const cols = ['A1', 'A2', 'A3', 'A4', 'A5'].map(hs), h2 = hs('A2'), h3 = hs('A3');
+  const byD = {};
+  let filled = 0;
+  for (const r of data) {
+    const d = nfkc(r[hD]).toUpperCase(); if (!/^D\d{4}$/.test(d)) continue;
+    const any = cols.some(h => h && String(r[h] || '').trim() !== '');
+    if (!any) continue;  // 送付資料が未記入のレコードは判断に使わない
+    filled++;
+    const e = byD[d] || (byD[d] = { 納品書: false, 請求書: false, n: 0 });
+    e.納品書 = e.納品書 || String(r[h2] || '').trim() === '1';
+    e.請求書 = e.請求書 || String(r[h3] || '').trim() === '1';
+    e.n++;
+  }
+  const m = label.match(/(\d{8})/);
+  S.kintone = { v: 1, byD, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '', rows: data.length, filled };
+  $('#stKt').className = 'st ok';
+  $('#stKt').textContent = `${label}：${data.length}件（送付資料を記入済み ${filled}件・D番号 ${Object.keys(byD).length}件）`;
+  lsSet('tokium_kintone', JSON.stringify(S.kintone));
+}
+$('#fKt').onchange = e => e.target.files[0] && loadCsvFile(e.target.files[0]);
+/* 書類が不要か。①取引先ルール（先方システムに登録する等、TOKIUMには不要）を優先
+   ②Kintoneの送付資料が記入済みで、その書類にチェックが無ければ不要（書類自体を出していない） */
+function notRequiredBy(c, t) {
+  if (CONFIG.notRequired.some(x => x.types.includes(t) && x.customer.test(c.row[CONFIG.db30.customer] || '')
+    && (!x.since || ymd(c.row[CONFIG.db30.salesDate] || c.row[CONFIG.db30.deliveryDate]) >= ymd(x.since)))) return '取引先ルール';
+  const k = (t === '納品書' || t === '請求書') && S.kintone?.byD[c.d];
+  return k && !k[t] ? 'Kintone' : '';
+}
+const isNotRequired = (c, t) => !!notRequiredBy(c, t);
 function cellStatus(c, t) {
   const docs = c.docs[t];
   if (isNotRequired(c, t) && !docs.some(d => ['TOKIUM記録あり', '確定済', '登録済（未確定）'].includes(d.status)) && !tkList(c.d, t).length) return '不要';
@@ -780,12 +819,13 @@ function docCell(c, t) {
   const linkKind = t === '請求書' ? c.invKind : t === '注文書' ? c.poKind : '';
   const linkNote = linkKind && !(t === '請求書' ? /^請求書/ : /^注文書/).test(linkKind) ? `DB30欄のURLは${linkKind.replace(/\(.*\)$/, '')}`
     : ((t === '請求書' && c.invNotInCsv) || (t === '注文書' && c.poNotInCsv)) && st !== 'TOKIUM記録あり' ? 'DB30のURLがCSVに無い' : '';
+  const nrNote = st === '不要' ? notRequiredBy(c, t) : '';
   const revNote = st === '要確認' && tkRef(c.d, t).length && !tkList(c.d, t).length && !(t === '請求書' && c.tokiumLink);
   const tip = t === '注文書' && (c.poState === 'empty' || c.poState === 'other') ? `（DB30のPO欄：${c.poState === 'empty' ? '空欄' : c.row[CONFIG.db30.po]}）` : '';
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cellPick}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cellPick}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -793,6 +833,7 @@ function updateLoadSummary() {
   parts.push(G.account ? `✓ ${G.account.name || 'サインイン済み'}` : '未サインイン（「サインイン」を押すと自動で読み込みます）');
   parts.push(S.db30Rows.length ? `DB30：${S.db30Name.replace(/^SharePoint |^手動読込 /, '')}` : 'DB30：未読込');
   parts.push(S.rawFiles.size ? `書類 ${S.rawFiles.size.toLocaleString()}件` : '書類：未読込');
+  if (S.kintone) parts.push(`Kintone：${S.kintone.date || S.kintone.label}時点`);
   parts.push(S.tokium ? `TOKIUM一覧：${S.tokium.date || S.tokium.label}時点` : 'TOKIUM一覧：未読込');
   $('#loadSumText').textContent = parts.join('　／　');
 }
@@ -1042,6 +1083,9 @@ function openDrawer(c) {
     <dt>DB30 PO欄</dt><dd>${db30Link(r[C.po], /^注文書/, '注文書')}</dd>
     <dt>DB30 納品書・請求書欄</dt><dd>${db30Link(r[C.invoiceLink], /^請求書/, '請求書')}</dd>
   </dl>
+  <h3>Kintoneの送付資料</h3>${!S.kintone ? '<div class="small muted">KintoneのCSVが未読込です</div>' : S.kintone.byD[c.d]
+    ? `<div class="small">納品書：${S.kintone.byD[c.d].納品書 ? '<b>必要</b>（チェックあり）' : '<b>不要</b>（チェックなし）'}　／　請求書：${S.kintone.byD[c.d].請求書 ? '<b>必要</b>（チェックあり）' : '<b>不要</b>（チェックなし）'}</div><div class="small muted">${esc(S.kintone.label)}</div>`
+    : '<div class="small muted">この案件は、Kintoneで送付資料が未記入（または未登録）です。取引先ルールで判断しています</div>'}
   <h3>TOKIUMの登録</h3>${tkRows}
   <div class="row" style="margin-top:6px"><button class="small primary" id="btnTkSearch" data-q="${esc(c.d)}">TOKIUMで ${esc(c.d)} を検索</button>${CONFIG.kintoneSearchUrl ? `<a class="btn small" href="${esc(CONFIG.kintoneSearchUrl.replace('{q}', encodeURIComponent(c.d)))}" target="_blank" rel="noopener">Kintoneで ${esc(c.d)} を検索</a>` : ''}<span class="small muted" id="tkSearchMsg"></span></div>
   <h3 style="margin-top:14px">SharePointの書類ファイル</h3>`
@@ -1386,6 +1430,12 @@ async function graphLoadRules() {
   CONFIG.folderAliases = (j.folderAliases || []).map(x => ({ folder: new RegExp(x.folder, 'i'), customer: new RegExp(x.customer, 'i') }));
   return `ルール ${CONFIG.notRequired.length + CONFIG.customerIssued.length}件・別名 ${CONFIG.folderAliases.length}件`;
 }
+async function graphLoadKintone() {
+  const f = await findLatestDated(CONFIG.graph.kintoneSearch, CONFIG.graph.kintoneNameRe, 'tokium_loc_kt', CONFIG.graph.tokiumFolder);
+  if (!f) return;
+  const { headers, data } = await downloadCsv(f);
+  setKintone(headers, data, 'SharePoint ' + f.name);
+}
 async function graphLoadTokium() {
   const f = await findLatestDated(CONFIG.graph.tokiumSearch, CONFIG.graph.tokiumNameRe, 'tokium_loc_tk', CONFIG.graph.tokiumFolder);
   if (!f) return;
@@ -1460,6 +1510,7 @@ $('#btnScan').onclick = async () => {
     if (CONFIG.graph.rulesPath) { $('#gsProg').textContent = 'ルールを読み込み中…'; rulesMsg = await graphLoadRules().catch(e => `⚠ルールファイルを読めません（${e.message}）`); }
     $('#gsProg').textContent = 'DB30を読み込み中…'; await graphLoadDb30(); rebuild();
     $('#gsProg').textContent = 'TOKIUM一覧を探しています…'; await graphLoadTokium().catch(e => console.warn(e)); rebuild();
+    $('#gsProg').textContent = 'Kintoneの送付資料を読み込み中…'; await graphLoadKintone().catch(e => console.warn(e)); rebuild();
     $('#gsProg').textContent = '共有ログを読み込み中…'; await graphLoadSharedLogs().catch(e => console.warn(e)); rebuild();
     $('#gsProg').textContent = '書類フォルダを一覧中…';
     const scan = await graphScan(years);
@@ -1497,6 +1548,7 @@ if (window.TOKIUM_DB30) {
   setDb30(D.headers, D.rows.map(r => Object.fromEntries(D.headers.map((h, i) => [h, r[i] ?? '']))), `自動（${D.sourceDate}版・${D.builtAt}作成）`);
   $('#fDb30').title = '新しいCSVを手動で読み込むと上書きします';
 }
+try { const kt = JSON.parse(lsGet('tokium_kintone') || 'null'); if (kt && kt.v === 1) { S.kintone = kt; $('#stKt').className = 'st'; $('#stKt').textContent = `前回読み込んだ ${kt.label} を使用中`; } } catch {}
 try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 5) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
   else if (tk) { $('#stTk').className = 'st err'; $('#stTk').textContent = `⚠ 前回読み込んだTOKIUM一覧（${tk.label}）は古い形式のため使っていません。TOKIUMのCSVをもう一度読み込んでください`; } } catch {}
 graphInit();
