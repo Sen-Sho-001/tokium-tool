@@ -1192,6 +1192,7 @@ function buildPrompt() {
    メモ＝${memo}${d.sharedWith?.length ? `\n   ※同じファイルを ${d.sharedWith.join('・')} でも使っていますが、${D} の分として登録してください` : ''}`;
   });
   return `TOKIUMに、次の書類を1件ずつ登録してください。
+※返答・途中の報告・確認の質問・最後のまとめは、すべて日本語で書いてください（RESULT行の形式はそのまま）。
 
 【手順（1件ごと）】
 1. 重複の確認：「国税関係書類一覧」の「指定した条件で検索」で、D番号（例：D9430）を検索する。同じ書類種別で、書類タイトルかメモに同じD番号がある登録が既にあれば、登録せず status を「既存」にする。
@@ -1213,7 +1214,7 @@ function buildPrompt() {
 【対象】
 ${lines.join('\n')}
 
-【最後に】1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は "" で囲む。status は「登録済」「既存」「要確認」のいずれか）：
+【最後に】1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は "" で囲む。status は「登録済」「既存」「要確認」のいずれか。note も日本語）：
 RESULT,<doc_type>,<d_number>,<quote_no>,<file_name>,<partner>,<doc_date>,<amount>,<status>,<note>`;
 }
 async function copyText(t) {
