@@ -150,7 +150,7 @@ details summary{cursor:pointer}
       <button class="primary" id="btnScan" disabled>DB30と書類一覧を読み込む</button>
       <span id="gsProg" class="small"></span>
     </div>
-    <div class="st" id="stGraph">サインインすると、SharePoint上のDB30（最新のBK）と、経理(自社発行)・経理(相手方受領)の書類一覧を自動で読み込みます。</div>
+    <div class="st" id="stGraph">サインインすると、SharePoint上のDB30（毎日更新の最新版。なければ月曜のBK）と、経理(自社発行)・経理(相手方受領)の書類一覧を自動で読み込みます。</div>
   </div>
   <div class="ld" style="margin-bottom:8px">
     <div class="row"><b style="display:inline">TOKIUMの登録済み一覧（国税関係書類詳細CSV）</b>
@@ -315,6 +315,7 @@ const CONFIG = {
     db30Search: 'db30_仕入販売管理BK',
     db30Folder: '本社/バックアップ/サイボウズオフィスバックアップ/見積・発注・仕入販売BK(毎週_月曜日更新)',  // 「ドキュメント」ライブラリ内のパス（毎週月曜に更新）
     db30NameRe: /^db30_仕入販売管理BK_(\d{8})\.csv$/i,
+    db30DailyPath: 'Claude_code_tools/TOKIUMツール/db30_仕入販売管理_最新.csv',  // 毎日コピーされる最新版（auto\copy_db30.py）。BKより新しければこちらを読む
     tokiumSearch: '国税関係書類詳細',
     tokiumFolder: 'Claude_code_tools/TOKIUMツール',
     // 処理ログの共有：各自が tokium_log_<アカウント>.csv に書き、開くときに全員分を読んで合わせる（同時保存でも消えない）
@@ -1498,15 +1499,22 @@ async function graphLoadTokium() {
   const { data } = await downloadCsv(f);
   setTokium(data, 'SharePoint ' + f.name, fileVer(f));
 }
+/* DB30は2か所：毎日コピーされる最新版（TOKIUMツールフォルダ）と、毎週月曜のBK。新しい方を読む（毎日分が止まってもBKで動く） */
 async function graphLoadDb30() {
-  const re = CONFIG.graph.db30NameRe;
-  const f = await findLatestDated(CONFIG.graph.db30Search, re, 'tokium_loc_db30', CONFIG.graph.db30Folder);
-  if (!f) throw new Error(`SharePointに ${CONFIG.graph.db30Search}_YYYYMMDD.csv が見つかりません（場所：ドキュメント/${CONFIG.graph.db30Folder}）`);
+  const re = CONFIG.graph.db30NameRe, D = await graphDrive();
+  const fmt = iso => { const t = new Date(iso); return `${t.toLocaleDateString('ja-JP')} ${t.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`; };
+  let daily = null, bk = null;
+  try { daily = { ...(await gGet(`/drives/${D}/root:/${encPath(CONFIG.graph.db30DailyPath)}?$select=id,name,lastModifiedDateTime,size`)), driveId: D }; } catch {}
+  try { bk = await findLatestDated(CONFIG.graph.db30Search, re, 'tokium_loc_db30', CONFIG.graph.db30Folder); } catch (e) { if (!daily) throw e; }
+  const bkDate = bk ? new Date(bk.name.match(re)[1].replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3T23:59:59')) : null;
+  const useDaily = daily && (!bkDate || new Date(daily.lastModifiedDateTime) >= bkDate);
+  const f = useDaily ? daily : bk;
+  if (!f) throw new Error(`SharePointにDB30が見つかりません（場所：ドキュメント/${CONFIG.graph.db30DailyPath} または ${CONFIG.graph.db30Folder}）`);
   if (S.db30Ver === fileVer(f) && S.db30Rows.length) return 'unchanged';
   const { headers, data } = await downloadCsv(f);
   S.db30Ver = fileVer(f);
-  const ymd = f.name.match(re)[1];
-  setDb30(headers, data, `SharePoint ${f.name}（${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6)}版）`);
+  const label = useDaily ? `毎日更新：${fmt(f.lastModifiedDateTime)}版` : (ymd => `月曜BK：${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6)}版${daily ? '' : '／毎日分が見つかりません'}`)(f.name.match(re)[1]);
+  setDb30(headers, data, `SharePoint ${f.name}（${label}）`);
 }
 /* 年フォルダ → 顧客 → サブフォルダ → ファイル を幅優先で一覧。送り状・受領書などは中に入らない */
 async function graphScan(years) {
