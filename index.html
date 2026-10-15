@@ -363,6 +363,7 @@ const CONFIG = {
   tokiumSearchUrl: 'https://secure.keihi.com/payment_requests/national_tax_documents',
   // Kintoneアプリの検索（{q}＝D番号）。空ならボタンを出さない
   kintoneSearchUrl: 'https://uqtg9.cybozu.com/k/178/?sv_searchtext={q}',
+  cybozuSearchUrl: 'https://uqtg9.cybozu.com/o/ag.cgi?Page=DBSearchResult&DID=30&QID=all&VID=all&UID=&UText=&Status=&SText=&Starting=0&Text={q}&Search=%E3%83%AC%E3%82%B3%E3%83%BC%E3%83%89%E6%A4%9C%E7%B4%A2',  // サイボウズOffice 仕入販売管理(DB30)のレコード検索
   // 書類が不要な取引先（DB30の得意先名で判定）。ここに書いた書類は「不要」と表示し、登録対象から外す
   // since：この日付以降の案件だけ不要（検収日(売上)、無ければ納品日で判定）。書かなければ全期間
   notRequired: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
@@ -1088,7 +1089,7 @@ function openDrawer(c) {
     ? `<div class="small">納品書：${S.kintone.byD[c.d].納品書 ? '<b>必要</b>（チェックあり）' : '<b>不要</b>（チェックなし）'}　／　請求書：${S.kintone.byD[c.d].請求書 ? '<b>必要</b>（チェックあり）' : '<b>不要</b>（チェックなし）'}</div><div class="small muted">${esc(S.kintone.label)}</div>`
     : '<div class="small muted">この案件は、Kintoneで送付資料が未記入（または未登録）です。取引先ルールで判断しています</div>'}
   <h3>TOKIUMの登録</h3>${tkRows}
-  <div class="row" style="margin-top:6px"><button class="small primary" id="btnTkSearch" data-q="${esc(c.d)}">TOKIUMで ${esc(c.d)} を検索</button>${CONFIG.kintoneSearchUrl ? `<a class="btn small" href="${esc(CONFIG.kintoneSearchUrl.replace('{q}', encodeURIComponent(c.d)))}" target="_blank" rel="noopener">Kintoneで ${esc(c.d)} を検索</a>` : ''}<span class="small muted" id="tkSearchMsg"></span></div>
+  <div class="row" style="margin-top:6px"><button class="small primary" id="btnTkSearch" data-q="${esc(c.d)}">TOKIUMで ${esc(c.d)} を検索</button>${CONFIG.kintoneSearchUrl ? `<a class="btn small" href="${esc(CONFIG.kintoneSearchUrl.replace('{q}', encodeURIComponent(c.d)))}" target="_blank" rel="noopener">Kintoneで ${esc(c.d)} を検索</a>` : ''}${CONFIG.cybozuSearchUrl ? `<a class="btn small" href="${esc(CONFIG.cybozuSearchUrl.replace('{q}', encodeURIComponent(c.d)))}" target="_blank" rel="noopener">サイボウズ(仕入販売管理)で ${esc(c.d)} を検索</a>` : ''}<span class="small muted" id="tkSearchMsg"></span></div>
   <h3 style="margin-top:14px">SharePointの書類ファイル</h3>`
   + DOC_TYPES.map(t => `<div class="small" style="font-weight:600;margin-top:6px">${t}</div>` + (c.docs[t].length ? c.docs[t].map(d => docItem(d)).join('') : '<div class="muted small">ファイルなし</div>')).join('');
   $('#drawer').classList.add('open');
