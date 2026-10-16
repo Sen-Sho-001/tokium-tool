@@ -857,7 +857,7 @@ function docCell(c, t) {
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cyNote}${cellPick}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cyNote}${cellPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -956,10 +956,11 @@ function updateSel() {
 function renderSelPop() {
   const docs = S.docs.filter(d => S.selected.has(d.key));
   const ds = [...new Set(docs.map(d => d.dList[0] || '（未特定）'))];
-  $('#selPopNote').textContent = `　${docs.length}件／D番号 ${ds.length}件：${ds.join('、')}`;
+  const dupKeys = new Set(dupSelections().flatMap(x => x.docs.map(d => d.key)));
+  $('#selPopNote').textContent = `　${docs.length}件／D番号 ${ds.length}件：${ds.join('、')}${dupKeys.size ? '　⚠ 同じ案件・同じ書類で2件以上選んでいる行があります（赤い行）。使わない方を × で外してください' : ''}`;
   $('#selPopBody').innerHTML = docs.length ? `<table><thead><tr><th>D番号</th><th>書類</th><th>得意先</th><th>ファイル</th><th></th></tr></thead><tbody>${docs.map(d => {
     const r = S.cases.get(d.dList[0])?.row;
-    return `<tr data-key="${esc(d.key)}"><td><a href="#" class="spOpen">${esc(d.dList[0] || '（未特定）')}</a></td><td>${d.type}</td><td>${esc(r ? r[CONFIG.db30.customer] : d.customer)}</td><td class="small">${esc(d.name)}</td><td><button class="small spDel" title="選択から外す">×</button></td></tr>`;
+    return `<tr data-key="${esc(d.key)}"${dupKeys.has(d.key) ? ' style="background:#ffe8ec" title="同じ案件・同じ書類で2件以上選んでいます"' : ''}><td><a href="#" class="spOpen">${esc(d.dList[0] || '（未特定）')}</a></td><td>${d.type}</td><td>${esc(r ? r[CONFIG.db30.customer] : d.customer)}</td><td class="small">${esc(d.name)}</td><td><button class="small spDel" title="選択から外す">×</button></td></tr>`;
   }).join('')}</tbody></table>` : '<div class="muted small">選択している書類はありません</div>';
 }
 
@@ -1263,14 +1264,26 @@ function buildPrompt() {
 【対象】
 ${lines.join('\n')}
 
-【最後に】1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は "" で囲む。status は「登録済」「既存」「要確認」のいずれか。note も日本語）：
+【最後に】1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は半角の " で囲む（全角の ” “ は使わない）。file_name は指定のファイル名をそのまま。status は「登録済」「既存」「要確認」のいずれか。note も日本語）：
 RESULT,<doc_type>,<d_number>,<quote_no>,<file_name>,<partner>,<doc_date>,<amount>,<status>,<note>`;
 }
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); return true; }
   catch { const ta = Object.assign(document.createElement('textarea'), { value: t }); document.body.append(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove(); return ok; }
 }
+/* 同じ案件・同じ書類種別で2件以上選んでいるもの（同じ書類の別版を両方選んでしまう誤り）→ [{ d, type, docs }] */
+function dupSelections() {
+  const g = {};
+  for (const d of S.docs.filter(x => S.selected.has(x.key) && x.dList[0])) (g[`${d.dList[0]}|${d.type}`] ||= []).push(d);
+  return Object.values(g).filter(a => a.length > 1).map(a => ({ d: a[0].dList[0], type: a[0].type, docs: a }));
+}
 async function doCopy(open) {
+  const dup = dupSelections();
+  if (dup.length && !confirm(`同じ案件・同じ書類で、ファイルを2件以上選んでいます。\n\n${dup.map(x => `■ ${x.d} ${x.type}（${x.docs.length}件）\n${x.docs.map(d => '   ・' + d.name).join('\n')}`).join('\n\n')}\n\n登録するのは通常1件です。使わない方の選択を外してください（「選択内容を見る」の × で外せます）。\n\nこのまま全部を登録対象にする場合は「OK」、選び直す場合は「キャンセル」を押してください。`)) {
+    $('#copyMsg').textContent = `⚠ 選び直してください：${dup.map(x => `${x.d} ${x.type} ${x.docs.length}件`).join('、')}`;
+    $('#selPop').classList.remove('hidden'); renderSelPop();
+    return;
+  }
   const t = buildPrompt(); const ok = await copyText(t);
   $('#copyMsg').textContent = ok ? `✓ ${S.selected.size}件分の指示文をコピーしました。Claude in Chrome のサイドパネルに貼り付けてください。` : 'コピーに失敗しました';
   lsSet('tokium_last_prompt', t);
@@ -1286,12 +1299,16 @@ const RES_COLS = ['doc_type', 'd_number', 'quote_no', 'file_name', 'partner', 'd
 $('#btnParse').onclick = () => {
   const out = [];
   for (const raw of $('#taImport').value.split(/\r?\n/)) {
-    const line = raw.replace(/^[\s`>*-]+/, '').trim();
+    // Claudeが全角の引用符（” “ ＂）で囲んで返すことがあるので、半角の " に直してから読む
+    const line = raw.replace(/^[\s`>*-]+/, '').trim().replace(/[“”„‟″＂]/g, '"');
     if (!line.startsWith('RESULT,')) continue;
     const cells = parseCSV(line)[0].slice(1);
     const r = Object.fromEntries(RES_COLS.map((c, i) => [c, (cells[i] ?? '').trim()]));
-    // ファイル名で書類を特定（同名が複数あれば D番号で絞る）
+    r.file_name = r.file_name.replace(/^["'「]+|["'」]+$/g, '').trim();
+    // ファイル名で書類を特定（同名が複数あれば D番号で絞る）。全角半角・空白の違いは無視して比べる
+    const fkey = s => nfkc(s).replace(/\s+/g, '');
     let cand = S.docs.filter(d => d.name === r.file_name);
+    if (!cand.length) cand = S.docs.filter(d => fkey(d.name) === fkey(r.file_name));
     if (cand.length > 1 && r.d_number) cand = cand.filter(d => d.dList.includes(r.d_number.toUpperCase()));
     const doc = cand.length === 1 ? cand[0] : null;
     const e = { r, doc, err: '' , method: doc?.method || '' , d: (r.d_number || '').toUpperCase() };
