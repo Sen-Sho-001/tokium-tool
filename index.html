@@ -84,6 +84,9 @@ td.num{text-align:right;white-space:nowrap}
 .mk.s-なし{background:transparent;color:var(--st-none);font-weight:400}
 .mk.s-POリンクなし{background:#fff;color:#b35900;border:1px solid #e0a060}
 td.doc .sub.warn{color:#b35900}
+.cyStale{display:inline-block;margin-top:2px;padding:0 5px;border-radius:3px;background:#efe6ff;color:#5b2ea6;font-size:11px;font-weight:600;white-space:nowrap}
+.cyBox{margin-top:6px;padding:6px 8px;background:#f6f0ff;border:1px solid #ddccf7;border-radius:6px}
+.cyBox code{font-size:11px;word-break:break-all;background:#fff;padding:1px 4px;border-radius:3px}
 td.doc .sub.ok{color:var(--st-done)}
 .mk.s-不要{background:#eef0f3;color:#8a8f96;font-weight:400}
 .mk.s-納品前{background:transparent;color:var(--st-none);border:1px dashed var(--line);font-weight:400}
@@ -316,6 +319,7 @@ const CONFIG = {
     db30Folder: '本社/バックアップ/サイボウズオフィスバックアップ/見積・発注・仕入販売BK(毎週_月曜日更新)',  // 「ドキュメント」ライブラリ内のパス（毎週月曜に更新）
     db30NameRe: /^db30_仕入販売管理BK_(\d{8})\.csv$/i,
     db30DailyPath: 'Claude_code_tools/TOKIUMツール/db30_仕入販売管理_最新.csv',  // 毎日コピーされる最新版（auto\copy_db30.py）。BKより新しければこちらを読む
+    db24Path: 'Claude_code_tools/TOKIUMツール/db24_見積リンク_最新.csv',  // DB24（見積管理）の見積No・View欄だけ（毎日。見積書のリンクがTOKIUMに変わったかを見る）
     tokiumSearch: '国税関係書類詳細',
     tokiumFolder: 'Claude_code_tools/TOKIUMツール',
     // 処理ログの共有：各自が tokium_log_<アカウント>.csv に書き、開くときに全員分を読んで合わせる（同時保存でも消えない）
@@ -364,6 +368,7 @@ const CONFIG = {
   // Kintoneアプリの検索（{q}＝D番号）。空ならボタンを出さない
   kintoneSearchUrl: 'https://uqtg9.cybozu.com/k/178/?sv_searchtext={q}',
   cybozuSearchUrl: 'https://uqtg9.cybozu.com/o/ag.cgi?Page=DBSearchResult&DID=30&QID=all&VID=all&UID=&UText=&Status=&SText=&Starting=0&Text={q}&Search=%E3%83%AC%E3%82%B3%E3%83%BC%E3%83%89%E6%A4%9C%E7%B4%A2',  // サイボウズOffice 仕入販売管理(DB30)のレコード検索
+  cybozuDb24SearchUrl: 'https://uqtg9.cybozu.com/o/ag.cgi?Page=DBSearchResult&DID=24&QID=all&VID=all&UID=&UText=&Status=&SText=&Starting=0&Text={q}&Search=%E3%83%AC%E3%82%B3%E3%83%BC%E3%83%89%E6%A4%9C%E7%B4%A2',  // 同 見積管理(DB24)
   // 書類が不要な取引先（DB30の得意先名で判定）。ここに書いた書類は「不要」と表示し、登録対象から外す
   // since：この日付以降の案件だけ不要（検収日(売上)、無ければ納品日で判定）。書かなければ全期間
   notRequired: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
@@ -490,6 +495,28 @@ function tkRef(d, t) {
   const r = S.cases.get(d)?.row; if (!r) return [];
   const counted = tkList(d, t), no = nfkc(r[CONFIG.db30.custNo]), nm = coName(r[CONFIG.db30.customer]);
   return (S.tokium?.idx[d]?.[t] || []).filter(x => x.needCustomer && !counted.includes(x) && (x.code ? x.code === no : coName(x.partner) === nm));
+}
+/* サイボウズのリンク欄（見積書＝DB24のView欄、注文書＝DB30のPO欄）。TOKIUMに登録したらTOKIUMのURLに書き換える運用 */
+function cyLink(c, t) {
+  if (t === '注文書') return { raw: (c.row[CONFIG.db30.po] || '').trim(), where: 'DB30（仕入販売管理）のPO欄', q: c.d, url: CONFIG.cybozuSearchUrl };
+  if (t === '見積書') {
+    const m = quoteKey(c.row[CONFIG.db30.quote]); if (!m || !S.db24) return null;
+    return { raw: (S.db24.byM[m] || '').trim(), where: `DB24（見積管理）${m} のView欄`, q: m, url: CONFIG.cybozuDb24SearchUrl };
+  }
+  return null;
+}
+/* TOKIUMに登録済みなのに、サイボウズのリンクがまだTOKIUMのURLになっていない → { ...cyLink, state, tk } */
+function cyStale(c, t) {
+  const l = cyLink(c, t); if (!l || CONFIG.tokiumLinkRe.test(l.raw)) return null;
+  const tk = tkList(c.d, t); if (!tk.length) return null;
+  return { ...l, tk, state: !l.raw ? '空欄' : /^https?:/.test(l.raw) ? 'SharePointのまま' : 'URL以外' };
+}
+const CY_STALE = 'サイボウズ未更新';
+function setDb24(data, label, ver = '') {
+  const byM = {};
+  for (const r of data) { const m = quoteKey(r['新見積No.']); if (m && r['View']) byM[m] = r['View']; }
+  S.db24 = { v: 1, ver, byM, label, rows: data.length };
+  try { localStorage.setItem('tokium_db24', JSON.stringify(S.db24)); } catch {}
 }
 function setTokium(data, label, ver = '') {
   const idx = {}; let used = 0;
@@ -785,7 +812,7 @@ function renderFilters() {
   const names = Object.keys(cc).sort((a, b) => cc[b] - cc[a] || a.localeCompare(b, 'ja'));
   S.custNames = new Set(names);
   $('#custList').innerHTML = names.map(n => `<option value="${esc(n)}">${cc[n]}件</option>`).join('');
-  keep('#flStatus', STATUS_ORDER.concat(['POリンクなし', '不要', 'なし']));
+  keep('#flStatus', STATUS_ORDER.concat(['POリンクなし', CY_STALE, '不要', 'なし']));
 }
 function caseMatches(c) {
   const C = CONFIG.db30, r = c.row;
@@ -800,6 +827,7 @@ function caseMatches(c) {
   if ($('#flSelOnly').checked && !DOC_TYPES.some(t => c.docs[t].some(d => S.selected.has(d.key)))) return false;
   const st = S.filterStatus || $('#flStatus').value;
   if (st === 'POリンクなし') { if (c.poState !== 'empty' && c.poState !== 'other') return false; }
+  else if (st === CY_STALE) { if (!types.some(t => cyStale(c, t))) return false; }
   else if (st && !types.some(t => cellStatus(c, t) === st)) return false;
   return true;
 }
@@ -824,10 +852,12 @@ function docCell(c, t) {
   const nrNote = st === '不要' ? notRequiredBy(c, t) : '';
   const revNote = st === '要確認' && tkRef(c.d, t).length && !tkList(c.d, t).length && !(t === '請求書' && c.tokiumLink);
   const tip = t === '注文書' && (c.poState === 'empty' || c.poState === 'other') ? `（DB30のPO欄：${c.poState === 'empty' ? '空欄' : c.row[CONFIG.db30.po]}）` : '';
+  const cy = cyStale(c, t);
+  const cyNote = cy ? `<div class="sub cyStale" title="TOKIUMには登録済みですが、${esc(cy.where)}が${cy.state}です。TOKIUMのURLに書き換えてください（詳細から）">${CY_STALE}</div>` : '';
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cellPick}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cyNote}${cellPick}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -836,6 +866,7 @@ function updateLoadSummary() {
   parts.push(S.db30Rows.length ? `DB30：${S.db30Name.replace(/^SharePoint |^手動読込 /, '')}` : 'DB30：未読込');
   parts.push(S.rawFiles.size ? `書類 ${S.rawFiles.size.toLocaleString()}件` : '書類：未読込');
   if (S.kintone) parts.push(`Kintone：${S.kintone.date || S.kintone.label}時点`);
+  if (S.db24) parts.push(`DB24：${(S.db24.label.match(/（(.+)版）/) || [, S.db24.label])[1]}`);
   parts.push(S.tokium ? `TOKIUM一覧：${S.tokium.date || S.tokium.label}時点` : 'TOKIUM一覧：未読込');
   $('#loadSumText').textContent = parts.join('　／　');
 }
@@ -870,6 +901,7 @@ function render() {
   const unm = S.docs.filter(d => !d.dList.length);
   $('#chips').innerHTML = STATUS_ORDER.map(s => `<span class="chip ${S.filterStatus === s ? 'on' : ''}" data-st="${s}" title="${s}"><span class="mk s-${s}">${MARK[s]}</span><span class="n">${cnt[s] || 0}</span></span>`).join('')
     + `<span class="chip ${S.filterStatus === 'POリンクなし' ? 'on' : ''}" data-st="POリンクなし" title="DB30のPO欄が空（またはURL以外）の案件"><span class="mk s-POリンクなし">${MARK['POリンクなし']}</span><span class="n">${[...S.cases.values()].filter(c => c.poState === 'empty' || c.poState === 'other').length}</span></span>`
+    + `<span class="chip ${S.filterStatus === CY_STALE ? 'on' : ''}" data-st="${CY_STALE}" title="TOKIUMに登録済みなのに、サイボウズのリンク（見積書＝DB24のView欄、注文書＝DB30のPO欄）がまだTOKIUMのURLになっていない案件"><span class="mk cyStale">${CY_STALE}</span><span class="n">${[...S.cases.values()].filter(c => cyStale(c, '見積書') || cyStale(c, '注文書')).length}</span></span>`
     + `<span class="chip" data-go="unmatched"><span class="badge b-要確認">未紐づけ</span><span class="n">${unm.length}</span></span>`
     + `<span class="muted small" style="align-self:center">（書類単位の件数。案件数：${S.cases.size.toLocaleString()}）</span>`;
   // 一覧
@@ -1084,7 +1116,16 @@ function openDrawer(c) {
     <dt>納品日／検収日</dt><dd>${esc(r[C.deliveryDate])}／${esc(r[C.salesDate])}</dd><dt>登録者</dt><dd>${esc(r[C.user])}</dd>
     <dt>DB30 PO欄</dt><dd>${db30Link(r[C.po], /^注文書/, '注文書')}</dd>
     <dt>DB30 納品書・請求書欄</dt><dd>${db30Link(r[C.invoiceLink], /^請求書/, '請求書')}</dd>
+    ${(l => l ? `<dt>DB24 見積書View欄</dt><dd>${db30Link(l.raw, /^見積書/, '見積書')}<div class="small muted">${esc(l.q)}</div></dd>` : '')(cyLink(c, '見積書'))}
   </dl>
+  ${['見積書', '注文書'].map(t => cyStale(c, t)).filter(Boolean).map(s => {
+    const nm = s.raw.split(',').slice(1).join(',').trim() || s.raw.split('/').pop().split('?')[0] || '';
+    const val = tkUrl(s.tk[0]) + (nm ? ',' + nm : '');
+    return `<div class="cyBox"><span class="cyStale">${CY_STALE}</span> <b>${esc(s.where)}</b> が${s.state}です（TOKIUMには登録済み）。
+      <div class="small" style="margin-top:4px">書き換え後の値：<code>${esc(val)}</code> <button class="small cyCopy" data-v="${esc(val)}">コピー</button>
+      ${s.url ? `<a class="btn small" href="${esc(s.url.replace('{q}', encodeURIComponent(s.q)))}" target="_blank" rel="noopener">サイボウズで ${esc(s.q)} を開く</a>` : ''}</div>
+      ${s.tk.length > 1 ? `<div class="small muted">TOKIUMに${s.tk.length}件あります。1件目のURLを出しています（詳細の「TOKIUMの登録」で確認）</div>` : ''}</div>`;
+  }).join('')}
   <h3>Kintoneの送付資料</h3>${!S.kintone ? '<div class="small muted">KintoneのCSVが未読込です</div>' : S.kintone.byD[c.d]
     ? `<div class="small">納品書：${S.kintone.byD[c.d].納品書 ? '<b>必要</b>（チェックあり）' : '<b>不要</b>（チェックなし）'}　／　請求書：${S.kintone.byD[c.d].請求書 ? '<b>必要</b>（チェックあり）' : '<b>不要</b>（チェックなし）'}</div><div class="small muted">${esc(S.kintone.label)}</div>`
     : '<div class="small muted">この案件は、Kintoneで送付資料が未記入（または未登録）です。取引先ルールで判断しています</div>'}
@@ -1118,6 +1159,12 @@ async function openTokiumSearch(q) {
   window.open(tpl, '_blank', 'noopener');
   return ok ? `「${q}」をコピーしました。TOKIUMの検索欄に貼り付けてください（Ctrl+V）` : 'コピーできませんでした';
 }
+$('#dwBody').addEventListener('click', async e => {
+  if (!e.target.classList.contains('cyCopy')) return;
+  const ok = await copyText(e.target.dataset.v);
+  e.target.textContent = ok ? 'コピーしました' : 'コピー失敗';
+  setTimeout(() => e.target.textContent = 'コピー', 2000);
+});
 $('#dwBody').addEventListener('click', e => {
   if (!e.target.classList.contains('unlinkF')) return;
   const d = S.docs.find(x => x.key === e.target.closest('.docitem')?.dataset.id); if (!d) return;
@@ -1493,6 +1540,14 @@ async function graphLoadKintone() {
   const { headers, data } = await downloadCsv(f);
   setKintone(headers, data, 'SharePoint ' + f.name, fileVer(f));
 }
+async function graphLoadDb24() {
+  const D = await graphDrive();
+  const f = { ...(await gGet(`/drives/${D}/root:/${encPath(CONFIG.graph.db24Path)}?$select=id,name,lastModifiedDateTime`)), driveId: D };
+  if (S.db24?.ver === fileVer(f)) return 'unchanged';
+  const { data } = await downloadCsv(f);
+  const t = new Date(f.lastModifiedDateTime);
+  setDb24(data, `${f.name}（${t.toLocaleDateString('ja-JP')} ${t.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}版）`, fileVer(f));
+}
 async function graphLoadTokium() {
   const f = await findLatestDated(CONFIG.graph.tokiumSearch, CONFIG.graph.tokiumNameRe, 'tokium_loc_tk', CONFIG.graph.tokiumFolder);
   if (!f) return;
@@ -1579,6 +1634,7 @@ $('#btnScan').onclick = async () => {
     $('#gsProg').textContent = 'DB30を確認中…'; if (await graphLoadDb30() === 'unchanged') same.push('DB30'); else rebuild();
     $('#gsProg').textContent = 'TOKIUM一覧を確認中…'; if (await graphLoadTokium().catch(e => console.warn(e)) === 'unchanged') same.push('TOKIUM一覧'); else rebuild();
     $('#gsProg').textContent = 'Kintoneの送付資料を確認中…'; if (await graphLoadKintone().catch(e => console.warn(e)) === 'unchanged') same.push('Kintone'); else rebuild();
+    $('#gsProg').textContent = '見積管理(DB24)のリンクを確認中…'; if (await graphLoadDb24().catch(e => console.warn(e)) === 'unchanged') same.push('DB24'); else rebuild();
     $('#gsProg').textContent = '共有ログを読み込み中…'; await graphLoadSharedLogs().catch(e => console.warn(e)); rebuild();
     $('#gsProg').textContent = '書類フォルダを一覧中…';
     const scan = await graphScan(years);
@@ -1618,6 +1674,7 @@ if (window.TOKIUM_DB30) {
   setDb30(D.headers, D.rows.map(r => Object.fromEntries(D.headers.map((h, i) => [h, r[i] ?? '']))), `自動（${D.sourceDate}版・${D.builtAt}作成）`);
   $('#fDb30').title = '新しいCSVを手動で読み込むと上書きします';
 }
+try { const d24 = JSON.parse(lsGet('tokium_db24') || 'null'); if (d24 && d24.v === 1) S.db24 = d24; } catch {}
 try { const kt = JSON.parse(lsGet('tokium_kintone') || 'null'); if (kt && kt.v === 1) { S.kintone = kt; $('#stKt').className = 'st'; $('#stKt').textContent = `前回読み込んだ ${kt.label} を使用中`; } } catch {}
 try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 5) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
   else if (tk) { $('#stTk').className = 'st err'; $('#stTk').textContent = `⚠ 前回読み込んだTOKIUM一覧（${tk.label}）は古い形式のため使っていません。TOKIUMのCSVをもう一度読み込んでください`; } } catch {}
