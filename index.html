@@ -394,7 +394,10 @@ const CONFIG = {
 const DOC_TYPES = ['見積書','注文書','納品書','請求書'];
 const STATUS_ORDER = ['要確認','未登録','PDFなし','登録済（未確定）','TOKIUM記録あり','確定済'];  // 左ほど「要対応」
 const SELECTABLE = new Set(['未登録','未確認','要確認']);
-const selectable = d => SELECTABLE.has(d.status) && !d.reverseRef;  // 反対種別で登録済みの書類はClaudeに送らない
+const DONE = ['登録済（未確定）', 'TOKIUM記録あり', '確定済'];
+/* 同じ案件・同じ書類で別のファイルが登録済み → このファイルは別版（旧版など）で登録不要 */
+const isAltVersion = d => !DONE.includes(d.status) && d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs[d.type] || []).some(x => x !== d && DONE.includes(x.status));
+const selectable = d => SELECTABLE.has(d.status) && !d.reverseRef && !isAltVersion(d);  // 反対種別で登録済み・別版の書類はClaudeに送らない
 /* 未登録＝未登録だと分かっている（DB30のPO列がまだSharePointリンク）／未確認＝TOKIUMを見ないと分からない（見積書・納品書など） */
 
 /* ===================================================================== */
@@ -788,6 +791,7 @@ const isNotRequired = (c, t) => !!notRequiredBy(c, t);
 function cellStatus(c, t) {
   const docs = c.docs[t];
   if (isNotRequired(c, t) && !docs.some(d => ['TOKIUM記録あり', '確定済', '登録済（未確定）'].includes(d.status)) && !tkList(c.d, t).length) return '不要';
+  if (docs.some(d => DONE.includes(d.status))) return DONE.find(s => docs.some(d => d.status === s));  // どれか1つが登録済みなら、残りは別版（旧版など）として表示に含めない
   if (docs.length) return STATUS_ORDER.find(s => docs.some(d => d.status === s)) || docs[0].status;
   if ((t === '注文書' && c.poTokium) || (t === '請求書' && c.tokiumLink) || tkList(c.d, t).length) return 'TOKIUM記録あり';
   if (tkRef(c.d, t).length) return '要確認';  // TOKIUMに反対の種別（●相手）で登録あり
@@ -839,7 +843,8 @@ function docCell(c, t) {
   const ds = c.docs[t]; let st = cellStatus(c, t);
   if (st === 'なし' && (t === '納品書' || t === '請求書') && ymd(c.row[CONFIG.db30.deliveryDate]) > todayYmd) st = '納品前';
   const shared = [...new Set(ds.flatMap(d => d.sharedWith || []))];
-  const sub = [ds.length > 1 ? `${ds.length}件` : '', shared.length ? `共用 ${shared.join(',')}` : ''].filter(Boolean).join(' ');
+  const alt = ds.filter(isAltVersion).length;
+  const sub = [ds.length > 1 ? `${ds.length}件${alt ? `（別版${alt}）` : ''}` : '', shared.length ? `共用 ${shared.join(',')}` : ''].filter(Boolean).join(' ');
   // 注文書：DB30のPO欄の状態も添える
   const poNote = t !== '注文書' ? '' : st === 'POリンクなし' ? (c.poState === 'other' ? 'PO欄がURL以外' : '') :
     (c.poState === 'empty' || c.poState === 'other') ? 'DB30 PO欄空' : '';
@@ -897,7 +902,7 @@ function render() {
   renderRules();
   updateLoadSummary();
   // 集計（書類単位）
-  const cnt = {}; for (const d of S.docs) if (d.dList.length) cnt[d.status] = (cnt[d.status] || 0) + 1;
+  const cnt = {}; for (const d of S.docs) if (d.dList.length && !isAltVersion(d)) cnt[d.status] = (cnt[d.status] || 0) + 1;
   const unm = S.docs.filter(d => !d.dList.length);
   $('#chips').innerHTML = STATUS_ORDER.map(s => `<span class="chip ${S.filterStatus === s ? 'on' : ''}" data-st="${s}" title="${s}"><span class="mk s-${s}">${MARK[s]}</span><span class="n">${cnt[s] || 0}</span></span>`).join('')
     + `<span class="chip ${S.filterStatus === 'POリンクなし' ? 'on' : ''}" data-st="POリンクなし" title="DB30のPO欄が空（またはURL以外）の案件"><span class="mk s-POリンクなし">${MARK['POリンクなし']}</span><span class="n">${[...S.cases.values()].filter(c => c.poState === 'empty' || c.poState === 'other').length}</span></span>`
@@ -1140,7 +1145,7 @@ function docItem(d) {
   const lr = d.logRow;
   return `<div class="docitem" data-id="${esc(d.key)}">
     <div class="row">${selectable(d) ? `<input type="checkbox" class="selDoc" ${S.selected.has(d.key) ? 'checked' : ''}>` : ''}
-      <span class="badge b-${d.status}">${d.status}</span><span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
+      <span class="badge b-${d.status}">${d.status}</span>${isAltVersion(d) ? '<span class="badge b-対象外" title="同じ案件・同じ書類で別のファイルが登録済みのため、このファイルは登録しません（旧版など）">別版（登録不要）</span>' : ''}<span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
       <span style="margin-left:auto"></span>
       ${d.method === 'manual' && d.dList.length ? '<button class="small unlinkF" title="手動で指定した紐づけを外す">紐づけ解除</button>' : ''}
       ${d.file || d.webUrl ? '<button class="small openF">開く</button>' : ''}
@@ -1310,8 +1315,17 @@ $('#btnParse').onclick = () => {
     let cand = S.docs.filter(d => d.name === r.file_name);
     if (!cand.length) cand = S.docs.filter(d => fkey(d.name) === fkey(r.file_name));
     if (cand.length > 1 && r.d_number) cand = cand.filter(d => d.dList.includes(r.d_number.toUpperCase()));
+    // ファイル名が一致しない（Claudeが「_」を落とす等）→ 同じD番号・書類種別で、見積No（またはPO番号）を名前に含むPDFが1つだけならそれ
+    let fuzzy = '';
+    if (!cand.length && r.d_number) {
+      const D = r.d_number.toUpperCase(), q = nfkc(r.quote_no || ''), po = (nfkc(r.file_name).match(/PO#([^_\s]+)/i) || [])[1] || '';
+      const near = S.docs.filter(d => d.hasPdf && d.type === r.doc_type && d.dList.includes(D) && /\.pdf$/i.test(d.name));
+      const byKey = near.filter(d => (q && fkey(d.name).includes(fkey(q) + '_')) || (po && fkey(d.name).includes('PO#' + po)));
+      cand = byKey.length === 1 ? byKey : near.length === 1 ? near : [];
+      if (cand.length) fuzzy = `ファイル名が一致しないため、${D}の${r.doc_type}「${cand[0].name}」として取り込み`;
+    }
     const doc = cand.length === 1 ? cand[0] : null;
-    const e = { r, doc, err: '' , method: doc?.method || '' , d: (r.d_number || '').toUpperCase() };
+    const e = { r, doc, err: '' , method: doc?.method || '' , d: (r.d_number || '').toUpperCase(), warn: fuzzy };
     if (!doc) e.err = cand.length ? '同名ファイルが複数' : 'ファイルが見つからない';
     if (!/登録済|既存|要確認/.test(r.status)) e.err = e.err || `status が不正（${r.status}）`;
     // 顧客PO：Claudeが読み取った見積No → D番号
