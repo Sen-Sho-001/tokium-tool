@@ -48,7 +48,7 @@ input[type=text],select{font:inherit;border:1px solid var(--line);border-radius:
 .badge{display:inline-block;border-radius:3px;padding:0 6px;font-size:11px;color:#fff;white-space:nowrap}
 .b-未登録{background:var(--st-todo)}
 .b-要確認{background:var(--st-check)}
-.b-登録済（未確定）{background:var(--st-done-tmp)}
+.b-登録済（Claude）{background:var(--st-rec)}
 .b-確定済{background:var(--st-done)}
 .b-TOKIUM記録あり{background:var(--st-rec)}
 .b-PDFなし{background:#7a5ea8}
@@ -76,7 +76,8 @@ td.num{text-align:right;white-space:nowrap}
 .mk{display:inline-block;min-width:64px;border-radius:4px;padding:1px 4px;font-size:11px;font-weight:600;line-height:18px;color:#fff;white-space:nowrap}
 .mk.s-TOKIUM記録あり{background:var(--st-rec)}
 .mk.s-確定済{background:var(--st-done)}
-.mk.s-登録済（未確定）{background:var(--st-done-tmp)}
+.mk.s-登録済（Claude）{background:var(--st-rec)}
+.mk.s-sp{background:var(--st-done-tmp)}
 .mk.s-未登録{background:var(--st-todo)}
 .mk.s-未確認{background:#9a6a2f}
 .mk.s-要確認{background:var(--st-check)}
@@ -259,7 +260,7 @@ details summary{cursor:pointer}
 </section>
 
 <section id="pane-log" class="hidden">
-  <div class="row" style="margin-bottom:6px"><span class="muted small" id="logNote"></span></div>
+  <div class="row" style="margin-bottom:6px"><button class="small primary" id="btnLogCsv" title="表示している処理ログ（全員分）を、Excelで開けるCSVで保存します">CSVで出力</button><span class="muted small" id="logNote"></span></div>
   <div class="tbl-wrap"><table id="tblLog"><thead><tr><th>日時</th><th>担当</th><th>書類</th><th>D番号</th><th>見積No</th><th>状態</th><th>方法</th><th>ファイル</th><th>備考</th></tr></thead><tbody></tbody></table></div>
 </section>
 
@@ -369,6 +370,8 @@ const CONFIG = {
   kintoneSearchUrl: 'https://uqtg9.cybozu.com/k/178/?sv_searchtext={q}',
   cybozuSearchUrl: 'https://uqtg9.cybozu.com/o/ag.cgi?Page=DBSearchResult&DID=30&QID=all&VID=all&UID=&UText=&Status=&SText=&Starting=0&Text={q}&Search=%E3%83%AC%E3%82%B3%E3%83%BC%E3%83%89%E6%A4%9C%E7%B4%A2',  // サイボウズOffice 仕入販売管理(DB30)のレコード検索
   cybozuDb24SearchUrl: 'https://uqtg9.cybozu.com/o/ag.cgi?Page=DBSearchResult&DID=24&QID=all&VID=all&UID=&UText=&Status=&SText=&Starting=0&Text={q}&Search=%E3%83%AC%E3%82%B3%E3%83%BC%E3%83%89%E6%A4%9C%E7%B4%A2',  // 同 見積管理(DB24)
+  // Claude in Chrome で登録する人（現時点は1人）。表示と、TOKIUMのメモ「Claude登録（担当：〇〇）」に使う。空なら担当者名の欄
+  claudeOperator: '',  // 公開版：SharePointのルールファイルから読む
   // 書類が不要な取引先（DB30の得意先名で判定）。ここに書いた書類は「不要」と表示し、登録対象から外す
   // since：この日付以降の案件だけ不要（検収日(売上)、無ければ納品日で判定）。書かなければ全期間
   notRequired: [],  // 公開版：取引先名を載せないため、SharePointのルールファイル（CONFIG.graph.rulesPath）から読む
@@ -392,9 +395,9 @@ const CONFIG = {
   logColumns: ['logged_at','user','doc_type','d_number','quote_no','file_name','drive_item_id','match_method','partner','doc_date','amount','status','note','author','row_id'],
 };
 const DOC_TYPES = ['見積書','注文書','納品書','請求書'];
-const STATUS_ORDER = ['要確認','未登録','PDFなし','登録済（未確定）','TOKIUM記録あり','確定済'];  // 左ほど「要対応」
+const STATUS_ORDER = ['要確認','未登録','PDFなし','登録済（Claude）','TOKIUM記録あり','確定済'];  // 左ほど「要対応」
 const SELECTABLE = new Set(['未登録','未確認','要確認']);
-const DONE = ['登録済（未確定）', 'TOKIUM記録あり', '確定済'];
+const DONE = ['登録済（Claude）', 'TOKIUM記録あり', '確定済'];
 /* 同じ案件・同じ書類で別のファイルが登録済み → このファイルは別版（旧版など）で登録不要 */
 const isAltVersion = d => !DONE.includes(d.status) && d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs[d.type] || []).some(x => x !== d && DONE.includes(x.status));
 const selectable = d => SELECTABLE.has(d.status) && !d.reverseRef && !isAltVersion(d);  // 反対種別で登録済み・別版の書類はClaudeに送らない
@@ -530,13 +533,14 @@ function setTokium(data, label, ver = '') {
     const t = tt.type;
     // D番号は書類タイトルとメモの両方から拾う（メモにD番号が無い登録や、全角「Ｄ」の登録があるため）
     const ds = [...new Set([...nfkc((r['書類タイトル'] || '') + ' ' + (r['メモ'] || '')).matchAll(/D(\d{4})(?!\d)/g)].map(m => 'D' + m[1]))];
-    const ent = { id: tkId(r['書類URL']), date: r['取引日'], amount: r['取引金額'], memo: r['メモ'], kind: r['書類種別'] };
+    const ent = { id: tkId(r['書類URL']), date: r['取引日'], amount: r['取引金額'], memo: r['メモ'], kind: r['書類種別'],
+      claudeBy: (nfkc(r['メモ'] || '').match(/Claude登録\(担当:([^)]*)\)/) || [])[1]?.trim() || '', at: r['登録日時'] || '' };  // 指示文でメモの最後に入れる「Claude登録（担当：〇〇）」
     if (tt.needCustomer) Object.assign(ent, { partner: r['取引先名'], code: nfkc(r['取引先コード']), needCustomer: true });
     for (const d of ds) ((idx[d] ||= {})[t] ||= []).push(ent);
     if (ds.length) used++;
   }
   const m = label.match(/(\d{8})/);
-  S.tokium = { v: 5, ver, idx, kindByUrl, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '' , rows: data.length, used };
+  S.tokium = { v: 6, ver, idx, kindByUrl, label, date: m ? `${m[1].slice(0, 4)}/${m[1].slice(4, 6)}/${m[1].slice(6)}` : '' , rows: data.length, used };
   $('#stTk').className = 'st ok';
   $('#stTk').textContent = `${label}：${data.length.toLocaleString()}件（うち案件に紐づく ${used.toLocaleString()}件）${S.tokium.date ? `／${S.tokium.date}時点` : ''}`;
   try { localStorage.setItem('tokium_export_idx', JSON.stringify(S.tokium)); } catch { $('#stTk').textContent += '（ブラウザへの保存は容量不足でできませんでした。次回も読み込みが必要です）'; }
@@ -609,6 +613,18 @@ function appendLog(rows) {
   S.logDirty = true; persistLog(); rebuild();
   scheduleSharedSave();
 }
+/* 処理ログをExcel向けのCSV（日本語の見出し・UTF-8 BOM付き）で保存。新しい順 */
+$('#btnLogCsv').onclick = () => {
+  if (!S.log.length) { alert('処理ログがありません'); return; }
+  const cols = [['logged_at', '日時'], ['user', '担当'], ['doc_type', '書類'], ['d_number', 'D番号'], ['quote_no', '見積No'], ['status', '状態'],
+    ['partner', '取引先'], ['doc_date', '取引日'], ['amount', '金額'], ['file_name', 'ファイル'], ['match_method', '紐づけ方法'], ['note', '備考'], ['author', 'アカウント']];
+  const rows = [...S.log].sort((a, b) => String(b.logged_at).localeCompare(String(a.logged_at)));
+  const lines = [cols.map(c => c[1]).join(',')].concat(rows.map(r => cols.map(([k]) => csvCell(r[k])).join(',')));
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv' })),
+    download: `TOKIUM処理ログ_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv` });
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
 $('#btnSaveLog').onclick = () => {
   const lines = [CONFIG.logColumns.join(',')].concat(S.log.map(r => CONFIG.logColumns.map(c => csvCell(r[c])).join(',')));
   const blob = new Blob(['\uFEFF' + lines.join('\r\n') + '\r\n'], { type: 'text/csv' });
@@ -617,7 +633,7 @@ $('#btnSaveLog').onclick = () => {
   a.click(); URL.revokeObjectURL(a.href);
   S.logDirty = false; persistLog();
 };
-const normStatus = s => /既存/.test(s) ? 'TOKIUM記録あり' : /確定済/.test(s) ? '確定済' : /要確認/.test(s) ? '要確認' : /登録済/.test(s) ? '登録済（未確定）' : /未登録/.test(s) ? '未登録' : s;
+const normStatus = s => /クローズ.*不要/.test(s) ? '不要' : /クローズ/.test(s) ? 'TOKIUM記録あり' : /既存/.test(s) ? 'TOKIUM記録あり' : /確定済/.test(s) ? '確定済' : /要確認/.test(s) ? '要確認' : /登録済/.test(s) ? '登録済（Claude）' : /未登録/.test(s) ? '未登録' : s;
 
 /* =====================================================================
    突き合わせ
@@ -790,7 +806,7 @@ function notRequiredBy(c, t) {
 const isNotRequired = (c, t) => !!notRequiredBy(c, t);
 function cellStatus(c, t) {
   const docs = c.docs[t];
-  if (isNotRequired(c, t) && !docs.some(d => ['TOKIUM記録あり', '確定済', '登録済（未確定）'].includes(d.status)) && !tkList(c.d, t).length) return '不要';
+  if (isNotRequired(c, t) && !docs.some(d => ['TOKIUM記録あり', '確定済', '登録済（Claude）'].includes(d.status)) && !tkList(c.d, t).length) return '不要';
   if (docs.some(d => DONE.includes(d.status))) return DONE.find(s => docs.some(d => d.status === s));  // どれか1つが登録済みなら、残りは別版（旧版など）として表示に含めない
   if (docs.length) return STATUS_ORDER.find(s => docs.some(d => d.status === s)) || docs[0].status;
   if ((t === '注文書' && c.poTokium) || (t === '請求書' && c.tokiumLink) || tkList(c.d, t).length) return 'TOKIUM記録あり';
@@ -836,7 +852,7 @@ function caseMatches(c) {
   return true;
 }
 let visibleCases = [];
-const MARK = { 'TOKIUM記録あり': '✓ 登録済', '確定済': '✓ 確定', '登録済（未確定）': '◐ 仮登録', '未登録': '✗ 未登録', '未確認': '? 未確認', '要確認': '! 要確認', 'PDFなし': 'PDFなし', 'なし': '—', '納品前': '納品前', 'POリンクなし': '△ PO欄空', '不要': '不要' };
+const MARK = { 'TOKIUM記録あり': '✓ 登録済', '確定済': '✓ 確定', '登録済（Claude）': '✓ 登録済(Claude)', '未登録': '✗ 未登録', '未確認': '? 未確認', '要確認': '! 要確認', 'PDFなし': 'PDFなし', 'なし': '—', '納品前': '納品前', 'POリンクなし': '△ PO欄空', '不要': '不要' };
 const ymd = s => String(s || '').replace(/\/(\d)(?!\d)/g, '/0$1');
 const todayYmd = (() => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`; })();
 function docCell(c, t) {
@@ -862,7 +878,7 @@ function docCell(c, t) {
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cyNote}${cellPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cyNote}${cellPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -1099,7 +1115,7 @@ function openDrawer(c) {
     raw = (raw || '').trim();
     if (!raw) return '<span class="mk s-POリンクなし">空欄</span>';
     const [u, ...rest] = raw.split(','), nm = rest.join(',');
-    const kind = CONFIG.tokiumLinkRe.test(u) ? ['s-TOKIUM記録あり', 'TOKIUMのURLあり', 'TOKIUMで開く'] : /^https?:/.test(u) ? ['s-登録済（未確定）', 'SharePointリンクあり', 'ファイルを開く'] : ['s-POリンクなし', 'URL以外の文字', ''];
+    const kind = CONFIG.tokiumLinkRe.test(u) ? ['s-TOKIUM記録あり', 'TOKIUMのURLあり', 'TOKIUMで開く'] : /^https?:/.test(u) ? ['s-sp', 'SharePointリンクあり', 'ファイルを開く'] : ['s-POリンクなし', 'URL以外の文字', ''];
     // TOKIUM一覧を読んでいれば、URLの先の書類種別も出す（違う種別なら警告）
     const tkK = CONFIG.tokiumLinkRe.test(u) ? tkKindOf(raw) : '';
     const kindNote = !CONFIG.tokiumLinkRe.test(u) || !S.tokium ? '' : !tkK ? '<div class="small" style="color:#b35900">⚠ このURLはTOKIUMのCSVにありません。登録済みとしては数えていません（CSVの出力後に登録した場合は、CSVを出し直すと反映されます）</div>'
@@ -1112,7 +1128,7 @@ function openDrawer(c) {
   const tk = Object.fromEntries(DOC_TYPES.map(t => [t, tkList(c.d, t)]));
   const tkRows = !S.tokium ? '<div class="small muted">TOKIUMのCSVが未読込です（上の「TOKIUMの登録済み一覧」から読み込むと表示されます）</div>'
     : `<table class="tkTbl">${DOC_TYPES.map(t => `<tr><th>${t}</th><td>${(tk[t] || []).length
-        ? tk[t].map(x => `<span class="mk s-TOKIUM記録あり">登録あり</span> <a href="${esc(tkUrl(x))}" target="_blank" rel="noopener">TOKIUMで開く</a> <span class="small">${esc(x.date)}　${fmtYen(x.amount)}円${x.needCustomer ? `　<span class="muted">（${esc(x.kind)}＝相手方発行・顧客指定の様式）</span>` : ''}</span><div class="small muted">${esc(x.memo)}</div>`).join('')
+        ? tk[t].map(x => `<span class="mk s-TOKIUM記録あり">登録あり</span> <a href="${esc(tkUrl(x))}" target="_blank" rel="noopener">TOKIUMで開く</a> <span class="small">${esc(x.date)}　${fmtYen(x.amount)}円${x.claudeBy ? `　<span class="cyStale" style="background:#e6f0ff;color:#1a4fa0" title="TOKIUMのメモに「Claude登録（担当：…）」あり${x.at ? '／登録日時 ' + esc(x.at) : ''}">Claude登録：${esc(x.claudeBy)}</span>` : ''}${x.needCustomer ? `　<span class="muted">（${esc(x.kind)}＝相手方発行・顧客指定の様式）</span>` : ''}</span><div class="small muted">${esc(x.memo)}</div>`).join('')
         : '<span class="mk s-未登録">登録なし</span>'}${tkRef(c.d, t).map(x => `<div class="tkRef"><span class="mk s-要確認">反対種別</span> ${esc(x.kind)}で登録あり（通常と逆の種別のため「要確認」。登録済みとしては数えていません） <a href="${esc(tkUrl(x))}" target="_blank" rel="noopener">TOKIUMで開く</a> <span class="small">${esc(x.date)}　${fmtYen(x.amount)}円</span><div class="small muted">${esc(x.memo)}</div></div>`).join('')}</td></tr>`).join('')}</table>`
       + `<div class="small muted">${esc(S.tokium.label)}${S.tokium.date ? `（${S.tokium.date}時点）` : ''}</div>`;
   $('#dwBody').innerHTML = `<dl class="kv">
@@ -1145,12 +1161,13 @@ function docItem(d) {
   const lr = d.logRow;
   return `<div class="docitem" data-id="${esc(d.key)}">
     <div class="row">${selectable(d) ? `<input type="checkbox" class="selDoc" ${S.selected.has(d.key) ? 'checked' : ''}>` : ''}
-      <span class="badge b-${d.status}">${d.status}</span>${isAltVersion(d) ? '<span class="badge b-対象外" title="同じ案件・同じ書類で別のファイルが登録済みのため、このファイルは登録しません（旧版など）">別版（登録不要）</span>' : ''}<span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
+      <span class="badge b-${d.status}">${d.status === '登録済（Claude）' ? `登録済（Claude：${esc(claudeUser())}）` : d.status}</span>${isAltVersion(d) ? '<span class="badge b-対象外" title="同じ案件・同じ書類で別のファイルが登録済みのため、このファイルは登録しません（旧版など）">別版（登録不要）</span>' : ''}<span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
       <span style="margin-left:auto"></span>
       ${d.method === 'manual' && d.dList.length ? '<button class="small unlinkF" title="手動で指定した紐づけを外す">紐づけ解除</button>' : ''}
       ${d.file || d.webUrl ? '<button class="small openF">開く</button>' : ''}
-      ${['登録済（未確定）', 'TOKIUM記録あり'].includes(d.status) ? '<button class="small primary doConfirm">確定済にする</button>' : ''}
-      ${['登録済（未確定）', '要確認', '確定済'].includes(d.status) ? '<button class="small doReset">未登録に戻す</button>' : ''}
+      ${['登録済（Claude）', 'TOKIUM記録あり'].includes(d.status) ? '<button class="small primary doConfirm">確定済にする</button>' : ''}
+      ${d.status === '要確認' && !d.reverseRef ? '<button class="small primary doClose" data-kind="登録済" title="TOKIUMに手で登録した・内容を直した など、登録は済んでいる">クローズ：登録済み</button><button class="small doClose" data-kind="登録不要" title="旧版・登録しない書類など">クローズ：登録不要</button>' : ''}
+      ${['登録済（Claude）', '要確認', '確定済', 'TOKIUM記録あり', '不要'].includes(d.status) && (d.status !== 'TOKIUM記録あり' && d.status !== '不要' || /クローズ/.test(d.logRow?.status || '')) ? '<button class="small doReset">未登録に戻す</button>' : ''}
     </div>
     <div class="nm small">${esc(d.name)}</div>
     <div class="small muted">${esc(d.rel)}${d.others.length ? `　（同名：${esc(d.others.join(', '))}）` : ''}</div>
@@ -1186,8 +1203,15 @@ $('#dwBody').onclick = e => {
   if (e.target.classList.contains('selDoc')) { e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
   if (e.target.classList.contains('openF')) openFile(d);
   const base = () => { const r = S.cases.get(d.dList[0])?.row || {}; return { doc_type: d.type, d_number: d.dList.join(' '), quote_no: d.quote || r[CONFIG.db30.quote] || '', file_name: d.name, drive_item_id: d.id, match_method: d.method, partner: r[CONFIG.db30.customer] || '' }; };
+  if (e.target.classList.contains('doClose')) {
+    if (claudeUser() === '未設定') return alert('担当者名を入力してください');
+    const kind = e.target.dataset.kind;
+    const note = prompt(`「${d.name}」を「クローズ（${kind}）」にします。\n理由・対応内容を入力してください（例：TOKIUMに手で登録／旧版のため不要）`, kind === '登録済' ? 'TOKIUMに手で登録' : '');
+    if (note === null) return;
+    appendLog([{ ...base(), status: `クローズ（${kind}）`, note: note || `担当者がクローズ（${kind}）` }]); openDrawer(drawerCase);
+  }
   if (e.target.classList.contains('doConfirm')) {
-    if (!$('#userName').value) return alert('担当者名を入力してください');
+    if (claudeUser() === '未設定') return alert('担当者名を入力してください');
     appendLog([{ ...base(), status: '確定済', note: 'TOKIUM上で確認・確定' }]); openDrawer(drawerCase);
   }
   if (e.target.classList.contains('doReset') && confirm('この書類を「未登録」に戻しますか？（ログに行を追加します）')) {
@@ -1223,9 +1247,12 @@ function orderDateFor(c) {
   if (fromName(poName)) return { date: fromName(poName), src: `DB30のPO欄のファイル名（${poName}）` };
   return null;
 }
+/* Claudeで登録する人の名前：担当者名の欄 → サインイン中のアカウント名（姓） */
+const claudeUser = () => CONFIG.claudeOperator || $('#userName').value.trim() || (G.account?.name || '').split(/[\s　]/)[0] || '未設定';
 function buildPrompt() {
   const C = CONFIG.db30, root = $('#rootPath').value.trim().replace(/[\\/]+$/, '');
   const docs = S.docs.filter(d => S.selected.has(d.key));
+  const byLine = `Claude登録（担当：${claudeUser()}）`;  // 誰がClaudeで登録したか、TOKIUMのメモに残す
   const lines = docs.map((d, i) => {
     const D = d.dList[0] || '', c = D && S.cases.get(D), r = c && c.row;
     const path = d.webUrl ? `${d.rel}\n   SharePoint：${d.webUrl}` : root ? root + '\\' + d.rel.replace(/\//g, '\\') : d.rel;
@@ -1234,7 +1261,7 @@ function buildPrompt() {
     let s = `${i + 1}. [${d.type}] ${D || 'D番号未特定'} ／ ファイル：${d.name}\n   保存場所：${path}`;
     if (!r) return s + `\n   → 案件が未特定です。PDF内の見積No（M+数字）を読み取って報告の quote_no に入れ、登録はせず status を「要確認」にしてください。取引先フォルダ：${d.customer}`;
     const title = d.type === '見積書' ? `${quote}_${D}` : `${D}_PO#${po || '（PDFの注文番号）'}`;
-    const memo = d.type === '納品書' || d.type === '請求書' ? `${title}（2行目に「品名(枚数)」 例：${r[C.item] || ''}）` : title;
+    const memo = `1行目「${title}」／` + (d.type === '納品書' || d.type === '請求書' ? `2行目「品名(枚数)」（例：${r[C.item] || ''}）／3行目` : '2行目') + `「${byLine}」（「」は入れない）`;
     const od = orderDateFor(c);
     const dateHint = { '見積書': od ? `受注日 ${od.date}（${od.src}）。見積書の発行日ではなく受注日で登録する` : `受注日（注文書＝POに記載の注文日をPDFで確認して入力。見積書の発行日ではない）${(() => { const po = c.docs['注文書'].find(x => x.webUrl); const link = po ? po.webUrl : ((c.row[CONFIG.db30.po] || '').split(',')[0].match(/^https?:\/\/\S+/) || [''])[0]; return link ? `\n     POのPDF：${link}` : ''; })()}`,
       '注文書': od ? `注文日 ${od.date}（${od.src}。PDFの注文日と照合）` : '注文書（PO）に記載の注文日', '納品書': `納品書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）`, '請求書': `請求書の発行日（DB30の納品日＝${r[C.deliveryDate] || '空欄'}）` }[d.type];
@@ -1256,7 +1283,7 @@ function buildPrompt() {
    ・SharePointのPDFは新しいタブで開く。TOKIUMの作業タブでは他のページを開かない
 4. 下の値を入力する。
    ・書類種別：「選択」から指定の種別を選ぶ
-   ・書類タイトル／メモ：指定どおり（メモは登録状況の照合に使うので、D番号を必ず入れる）
+   ・書類タイトル／メモ：指定どおり（メモは登録状況の照合に使うので、D番号を必ず入れる）。メモの最後の行には「${byLine}」を必ず入れる
    ・取引日：指定の日付（PDFの記載と照合）。日付はキーボード入力せず、カレンダーから月を移動して日をクリックして選ぶ。選択後、欄に「2026/9/11」のように表示されていることを確認する
    ・取引先名：「選択」を押し、取引先コードで検索して選ぶ（登録番号は自動で入る）
    ・取引金額：税抜の金額（通貨は JPY のまま）
@@ -1283,6 +1310,7 @@ function dupSelections() {
   return Object.values(g).filter(a => a.length > 1).map(a => ({ d: a[0].dList[0], type: a[0].type, docs: a }));
 }
 async function doCopy(open) {
+  if (claudeUser() === '未設定') { alert('担当者名を入れてください（TOKIUMのメモに「Claude登録（担当：〇〇）」として残します）'); $('#loadBox').open = true; $('#userName').focus(); return; }
   const dup = dupSelections();
   if (dup.length && !confirm(`同じ案件・同じ書類で、ファイルを2件以上選んでいます。\n\n${dup.map(x => `■ ${x.d} ${x.type}（${x.docs.length}件）\n${x.docs.map(d => '   ・' + d.name).join('\n')}`).join('\n\n')}\n\n登録するのは通常1件です。使わない方の選択を外してください（「選択内容を見る」の × で外せます）。\n\nこのまま全部を登録対象にする場合は「OK」、選び直す場合は「キャンセル」を押してください。`)) {
     $('#copyMsg').textContent = `⚠ 選び直してください：${dup.map(x => `${x.d} ${x.type} ${x.docs.length}件`).join('、')}`;
@@ -1525,6 +1553,7 @@ async function graphLoadRules() {
   const conv = a => (a || []).map(x => ({ customer: new RegExp(x.customer, 'i'), types: x.types || [], since: x.since || '' }));
   CONFIG.notRequired = conv(j.notRequired); CONFIG.customerIssued = conv(j.customerIssued);
   CONFIG.folderAliases = (j.folderAliases || []).map(x => ({ folder: new RegExp(x.folder, 'i'), customer: new RegExp(x.customer, 'i') }));
+  if (j.claudeOperator) CONFIG.claudeOperator = j.claudeOperator;
   return `ルール ${CONFIG.notRequired.length + CONFIG.customerIssued.length}件・別名 ${CONFIG.folderAliases.length}件`;
 }
 /* ===== 読み込んだデータのキャッシュ（ブラウザのIndexedDB）。開いたらすぐ表示し、裏で最新を確認する ===== */
@@ -1541,7 +1570,7 @@ async function saveSnapshot() {
   await idbSet('snapshot', { v: 1, savedAt: new Date().toISOString(), account: G.account?.username || '',
     db30: { name: S.db30Name, ver: S.db30Ver || '', cols, rows },
     files: [...S.rawFiles.values()].map(f => ({ ...f, file: null })),
-    rules: { notRequired: reSrc(CONFIG.notRequired), customerIssued: reSrc(CONFIG.customerIssued), folderAliases: reSrc(CONFIG.folderAliases) },
+    rules: { notRequired: reSrc(CONFIG.notRequired), customerIssued: reSrc(CONFIG.customerIssued), folderAliases: reSrc(CONFIG.folderAliases), claudeOperator: CONFIG.claudeOperator },
     shareMap: S.shareMap, scanMsg: $('#stGraph').textContent });
 }
 async function restoreSnapshot() {
@@ -1555,6 +1584,7 @@ async function restoreSnapshot() {
   if (sn.rules && CONFIG.graph.rulesPath) {  // 公開版はルールもキャッシュから（原本はHTMLに書いたルールを使う）
     CONFIG.notRequired = re(sn.rules.notRequired, 'customer'); CONFIG.customerIssued = re(sn.rules.customerIssued, 'customer');
     CONFIG.folderAliases = (sn.rules.folderAliases || []).map(x => ({ folder: new RegExp(x.folder, 'i'), customer: new RegExp(x.customer, 'i') }));
+    if (sn.rules.claudeOperator) CONFIG.claudeOperator = sn.rules.claudeOperator;
   }
   if (sn.shareMap) S.shareMap = sn.shareMap;
   S.snapshotAt = sn.savedAt;
@@ -1707,7 +1737,7 @@ if (window.TOKIUM_DB30) {
 }
 try { const d24 = JSON.parse(lsGet('tokium_db24') || 'null'); if (d24 && d24.v === 1) S.db24 = d24; } catch {}
 try { const kt = JSON.parse(lsGet('tokium_kintone') || 'null'); if (kt && kt.v === 1) { S.kintone = kt; $('#stKt').className = 'st'; $('#stKt').textContent = `前回読み込んだ ${kt.label} を使用中`; } } catch {}
-try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 5) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
+try { const tk = JSON.parse(lsGet('tokium_export_idx') || 'null'); if (tk && tk.v === 6) { S.tokium = tk; $('#stTk').className = 'st'; $('#stTk').textContent = `前回読み込んだ ${tk.label}（${tk.rows.toLocaleString()}件）を使用中`; }
   else if (tk) { $('#stTk').className = 'st err'; $('#stTk').textContent = `⚠ 前回読み込んだTOKIUM一覧（${tk.label}）は古い形式のため使っていません。TOKIUMのCSVをもう一度読み込んでください`; } } catch {}
 // 前回のデータをすぐ表示（裏の最新確認より先に）
 restoreSnapshot().then(okSnap => { if (okSnap) { rebuild(); updateLoadSummary(); } }).finally(() => graphInit());
