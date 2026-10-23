@@ -1463,11 +1463,38 @@ async function graphGetJson(path) {
   try { return JSON.parse((await res.text()).replace(/^﻿/, '')); } catch { return null; }
 }
 let tkRefreshBusy = false;
+/* 管理者PCの常駐プログラム（auto\tokium_local_server.py、127.0.0.1:8767）に直接頼む。
+   そのPCでツールを開いているときだけ届く。届かなければ false を返し、SharePoint経由の依頼に切り替える */
+const LOCAL_TK = 'http://127.0.0.1:8767/tokium';
+async function refreshTokiumLocal(msg) {
+  const get = (p, ms = 3000) => fetch(LOCAL_TK + p, { signal: AbortSignal.timeout(ms) });
+  try { if (!(await get('/status', 2000)).ok) return false; } catch { return false; }
+  msg('TOKIUMからCSVを書き出しています…');
+  let st = await (await fetch(LOCAL_TK + '/refresh', { method: 'POST' })).json();
+  const t0 = Date.now();
+  while (st.state === 'running') {
+    await sleep(3000);
+    st = await (await get('/status')).json();
+    msg(`⏳ TOKIUMから書き出し中…（${Math.round((Date.now() - t0) / 1000)}秒）`);
+    if (Date.now() - t0 > 16 * 60 * 1000) { msg('✗ 16分たっても終わりませんでした'); return true; }
+  }
+  if (st.state !== 'done') { msg('✗ ' + st.message); return true; }
+  const res = await get('/csv', 30000);
+  const name = new TextDecoder().decode(new Uint8Array((res.headers.get('X-File-Name') || '').match(/../g).map(h => parseInt(h, 16))));
+  const { data } = toObjects(parseCSV(decodeCSV(await res.arrayBuffer())));
+  setTokium(data, 'このPC ' + name, `${name}|local ${res.headers.get('X-File-Mtime')}`);
+  rebuild(); render();
+  msg(`✓ TOKIUM一覧を更新しました（${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}・${Math.round((Date.now() - t0) / 1000)}秒）`);
+  return true;
+}
 async function refreshTokiumNow() {
   const msg = t => { $('#tkRefreshMsg').textContent = t; };
-  if (!G.account) return msg('先にサインインしてください');
   if (tkRefreshBusy) return;
   tkRefreshBusy = true; $('#btnTkRefresh').disabled = true;
+  try { msg('確認しています…'); if (await refreshTokiumLocal(msg)) { tkRefreshBusy = false; $('#btnTkRefresh').disabled = false; return; } }
+  catch (e) { msg('✗ ' + e.message); tkRefreshBusy = false; $('#btnTkRefresh').disabled = false; return; }
+  // 管理者PC以外：SharePointに依頼ファイルを置き、管理者PCの監視タスクが拾う（OneDriveの同期しだいで数分〜十数分）
+  if (!G.account) { msg('先にサインインしてください'); tkRefreshBusy = false; $('#btnTkRefresh').disabled = false; return; }
   const folder = CONFIG.graph.tokiumFolder, rid = new Date().toISOString();
   try {
     msg('依頼を送っています…');
@@ -1484,8 +1511,8 @@ async function refreshTokiumNow() {
         break;
       }
       if (st && st.request === rid && (st.state === 'error' || st.state === 'skipped')) { msg('✗ ' + st.message); break; }
-      if (sec > 12 * 60) { msg('✗ 12分待っても終わりませんでした（取得を担当するPCが止まっている可能性があります）'); break; }
-      msg(st && st.request === rid && st.state === 'running' ? `⏳ TOKIUMから書き出し中…（${sec}秒）` : `⏳ 取得の開始を待っています…（${sec}秒。PCに依頼が届くまで1〜3分）`);
+      if (sec > 25 * 60) { msg('✗ 25分待っても終わりませんでした（取得を担当するPCが止まっている可能性があります）'); break; }
+      msg(st && st.request === rid && st.state === 'running' ? `⏳ TOKIUMから書き出し中…（${sec}秒）` : `⏳ 取得の開始を待っています…（${Math.floor(sec / 60)}分${sec % 60}秒。管理者PCに依頼が届くまで数分〜十数分）`);
     }
   } catch (e) { msg('✗ ' + e.message); }
   tkRefreshBusy = false; $('#btnTkRefresh').disabled = false;
