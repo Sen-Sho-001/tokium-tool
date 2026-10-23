@@ -659,7 +659,8 @@ function rebuild() {
     const q = quoteKey(r[C.quote]); if (q) (S.quoteIndex.get(q) || S.quoteIndex.set(q, []).get(q)).push(d);
     // PO列：SharePoint共有リンク（未登録）か、「TOKIUMのURL,ファイル名」（登録済）
     const po = (r[C.po] || '').trim();
-    if (c.poTokium) { const nm = normName(po.split(',').slice(1).join(',')); if (nm) (poNameToD.get(nm) || poNameToD.set(nm, []).get(nm)).push(d); }
+    // ファイルの紐づけは、TOKIUMの書類種別に関係なくPO欄のファイル名で行う（種別違い＝注文請書などでもファイルは見つける）
+    if (CONFIG.tokiumLinkRe.test(po)) { const nm = normName(po.split(',').slice(1).join(',')); if (nm) (poNameToD.get(nm) || poNameToD.set(nm, []).get(nm)).push(d); }
     else if (/^https?:/.test(po)) (poLinkToD.get(po) || poLinkToD.set(po, []).get(po)).push(d);  // 1つのPOが複数案件にまたがることがある
   }
   // 共有リンク(→ファイルID) 経由で顧客POを特定
@@ -751,6 +752,7 @@ function rebuild() {
       else if (c && e.type === '注文書' && c.poTokium) e.status = 'TOKIUM記録あり';
       else if (c && isNotRequired(c, e.type)) e.status = '不要';  // 書類不要の取引先（ファイルがあっても登録対象外）
       else if (c && tkRef(d, e.type).length) { e.status = '要確認'; e.reverseRef = true; }  // TOKIUMに反対の種別（●相手）で登録あり
+      else if (c && e.type === '注文書' && c.poKind && !/^注文書/.test(c.poKind)) { e.status = '要確認'; e.reverseRef = true; }  // PO欄のTOKIUM URLが別の種別（注文請書など）＝登録はあるが種別違い。Claudeに二重登録させない
       else if (e.type === '注文書' && e.method === 'link') e.status = '未登録';
       else e.status = '未登録';
       S.docs.push(e);
