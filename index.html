@@ -143,7 +143,8 @@ details summary{cursor:pointer}
 
 <!-- ===== 読み込み ===== -->
 <details class="panel" id="loadBox" open>
-  <summary id="loadSum"><b>データの読み込み</b><span id="loadSumText" class="small muted"></span><span class="small muted loadHint">（クリックで開閉）</span></summary>
+  <summary id="loadSum"><b>データの読み込み</b><span id="loadSumText" class="small muted"></span><span class="small muted loadHint">（クリックで開閉）</span>
+    <button class="small" id="btnTkRefresh" title="TOKIUMで登録・変更した内容を、今すぐTOKIUMからCSVを書き出して反映します（2〜5分）">🔄 TOKIUMの最新を取得</button><span class="small" id="tkRefreshMsg"></span></summary>
   <div style="margin-top:8px">
   <div class="ld" style="margin-bottom:8px;border-style:solid;border-color:#9db8e3;background:#f5f9ff">
     <div class="row">
@@ -1446,6 +1447,49 @@ async function saveSharedLog() {
   S.logShared = `☁ 共有ログに保存しました（${myLogFileName()}、${mine.length}行、${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}）`;
   persistLog();
 }
+/* 「TOKIUMの最新を取得」：TOKIUMツールフォルダに依頼ファイルを置く → 管理者PCの監視タスク（auto\tokium_refresh_watch.py）が
+   TOKIUMからCSVを書き出し、_refresh_status.json に結果を書く → それを見てTOKIUM一覧を読み直す */
+async function graphPutText(path, text, type = 'application/json') {
+  const D = await graphDrive();
+  const res = await fetch(`${GRAPH}/drives/${D}/root:/${encPath(path)}:/content`,
+    { method: 'PUT', headers: { Authorization: 'Bearer ' + await gTokenWrite(), 'Content-Type': type }, body: new Blob([text], { type }) });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(`${res.status} ${j.error?.code || ''}`); }
+}
+async function graphGetJson(path) {
+  const D = await graphDrive();
+  const meta = await gGet(`/drives/${D}/root:/${encPath(path)}?$select=id,lastModifiedDateTime`).catch(() => null); if (!meta) return null;
+  const m2 = await gGet(`/drives/${D}/items/${meta.id}`);
+  const res = await fetch(m2['@microsoft.graph.downloadUrl']); if (!res.ok) return null;
+  try { return JSON.parse((await res.text()).replace(/^﻿/, '')); } catch { return null; }
+}
+let tkRefreshBusy = false;
+async function refreshTokiumNow() {
+  const msg = t => { $('#tkRefreshMsg').textContent = t; };
+  if (!G.account) return msg('先にサインインしてください');
+  if (tkRefreshBusy) return;
+  tkRefreshBusy = true; $('#btnTkRefresh').disabled = true;
+  const folder = CONFIG.graph.tokiumFolder, rid = new Date().toISOString();
+  try {
+    msg('依頼を送っています…');
+    await graphPutText(`${folder}/_refresh_request.json`, JSON.stringify({ requested_at: rid, by: G.account.name || G.account.username }));
+    const t0 = Date.now();
+    for (;;) {
+      await sleep(15000);
+      const sec = Math.round((Date.now() - t0) / 1000);
+      const st = await graphGetJson(`${folder}/_refresh_status.json`);
+      if (st && st.request === rid && st.state === 'done') {
+        msg('TOKIUM一覧を読み直しています…');
+        await graphLoadTokium(); rebuild(); render();
+        msg(`✓ TOKIUM一覧を更新しました（${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}）`);
+        break;
+      }
+      if (st && st.request === rid && (st.state === 'error' || st.state === 'skipped')) { msg('✗ ' + st.message); break; }
+      if (sec > 12 * 60) { msg('✗ 12分待っても終わりませんでした（取得を担当するPCが止まっている可能性があります）'); break; }
+      msg(st && st.request === rid && st.state === 'running' ? `⏳ TOKIUMから書き出し中…（${sec}秒）` : `⏳ 取得の開始を待っています…（${sec}秒。PCに依頼が届くまで1〜3分）`);
+    }
+  } catch (e) { msg('✗ ' + e.message); }
+  tkRefreshBusy = false; $('#btnTkRefresh').disabled = false;
+}
 /* 共有ログ：フォルダ内の tokium_log_*.csv を全員分読んで、手元のログと合わせる（同じ行は1つに） */
 async function graphLoadSharedLogs() {
   const D = await graphDrive();
@@ -1682,6 +1726,7 @@ async function graphResolveShares() {
 }
 /* 自動読み込み（開いたとき・サインインしたとき）。読み込み中なら何もしない */
 function autoLoad() { if (!G.loading) $('#btnScan').onclick(); }
+$('#btnTkRefresh').onclick = e => { e.preventDefault(); e.stopPropagation(); refreshTokiumNow(); };  // summary内なので開閉させない
 $('#btnScan').onclick = async () => {
   if (G.loading) return;
   G.loading = true; updateLoadSummary();
