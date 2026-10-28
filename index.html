@@ -876,12 +876,15 @@ function docCell(c, t) {
   const nrNote = st === '不要' ? notRequiredBy(c, t) : '';
   const revNote = st === '要確認' && tkRef(c.d, t).length && !tkList(c.d, t).length && !(t === '請求書' && c.tokiumLink);
   const tip = t === '注文書' && (c.poState === 'empty' || c.poState === 'other') ? `（DB30のPO欄：${c.poState === 'empty' ? '空欄' : c.row[CONFIG.db30.po]}）` : '';
+  // 未登録の書類で、ファイル名の金額がDB30と違う（古い見積書・注文書の可能性）
+  const amNote = ds.filter(d => selectable(d) && amountMismatch(d)).map(d => { const m = amountMismatch(d);
+    return `<div class="sub warn" title="${esc(d.name)}：ファイル名 ${m.file.map(fmtYen).join('・')} ／ DB30 ${fmtYen(m.db30)}（税込 ${fmtYen(m.tax)}）。更新された書類がないか確認してください">⚠ 金額違い（ファイル${m.file.map(fmtYen).join('・')}／DB30 ${fmtYen(m.db30)}）</div>`; })[0] || '';
   const cy = cyStale(c, t);
   const cyNote = cy ? `<div class="sub cyStale" title="TOKIUMには登録済みですが、${esc(cy.where)}が${cy.state}です。TOKIUMのURLに書き換えてください（詳細から）">${CY_STALE}</div>` : '';
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${cyNote}${cellPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${amNote}${cyNote}${cellPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -1308,6 +1311,17 @@ async function copyText(t) {
   catch { const ta = Object.assign(document.createElement('textarea'), { value: t }); document.body.append(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove(); return ok; }
 }
 /* 同じ案件・同じ書類種別で2件以上選んでいるもの（同じ書類の別版を両方選んでしまう誤り）→ [{ d, type, docs }] */
+/* ファイル名の金額（例：…_800000_M13570-1_… / …_7600000・1035000_…）とDB30の売上金額（税抜・税込）が違う → { file:[…], db30, tax }。
+   金額がファイル名に無い・DB30に金額が無いときは null（チェックしない）。古い見積書・注文書を選んでいないかの確認用 */
+function amountMismatch(d) {
+  const r = S.cases.get(d.dList[0])?.row; if (!r || d.sharedWith?.length) return null;  // 1つのファイルを複数案件で使う（POを分割）ときは金額が合わないのが普通
+  const num = s => +String(s || '').replace(/[^\d]/g, '');
+  const db30 = num(r[CONFIG.db30.amount]), tax = num(r[CONFIG.db30.amountTax]); if (!db30) return null;
+  const toks = nfkc(d.name).replace(/\.[^.]+$/, '').split('_').map(s => s.trim());
+  const amts = toks.filter((s, i) => !(i === 0 && /^20\d{6}$/.test(s)) && /^\d{4,}(・\d{4,})*$/.test(s)).flatMap(s => s.split('・').map(Number));
+  if (!amts.length || amts.some(a => a === db30 || a === tax)) return null;
+  return { file: amts, db30, tax };
+}
 function dupSelections() {
   const g = {};
   for (const d of S.docs.filter(x => S.selected.has(x.key) && x.dList[0])) (g[`${d.dList[0]}|${d.type}`] ||= []).push(d);
@@ -1318,6 +1332,12 @@ async function doCopy(open) {
   const dup = dupSelections();
   if (dup.length && !confirm(`同じ案件・同じ書類で、ファイルを2件以上選んでいます。\n\n${dup.map(x => `■ ${x.d} ${x.type}（${x.docs.length}件）\n${x.docs.map(d => '   ・' + d.name).join('\n')}`).join('\n\n')}\n\n登録するのは通常1件です。使わない方の選択を外してください（「選択内容を見る」の × で外せます）。\n\nこのまま全部を登録対象にする場合は「OK」、選び直す場合は「キャンセル」を押してください。`)) {
     $('#copyMsg').textContent = `⚠ 選び直してください：${dup.map(x => `${x.d} ${x.type} ${x.docs.length}件`).join('、')}`;
+    $('#selPop').classList.remove('hidden'); renderSelPop();
+    return;
+  }
+  const am = S.docs.filter(x => S.selected.has(x.key)).map(d => ({ d, m: amountMismatch(d) })).filter(x => x.m);
+  if (am.length && !confirm(`ファイル名の金額と、DB30の金額が違う書類があります。\n\n${am.map(({ d, m }) => `■ ${d.dList[0]} ${d.type}：ファイル名 ${m.file.map(fmtYen).join('・')} ／ DB30 ${fmtYen(m.db30)}（税込 ${fmtYen(m.tax)}）\n   ・${d.name}`).join('\n\n')}\n\n見積書・注文書が更新されていないか（古いファイルを選んでいないか）確認してください。\n\nこのまま進める場合は「OK」、選び直す場合は「キャンセル」を押してください。`)) {
+    $('#copyMsg').textContent = `⚠ 金額違いを確認してください：${am.map(({ d }) => `${d.dList[0]} ${d.type}`).join('、')}`;
     $('#selPop').classList.remove('hidden'); renderSelPop();
     return;
   }
