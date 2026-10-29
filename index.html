@@ -86,6 +86,8 @@ td.num{text-align:right;white-space:nowrap}
 .mk.s-POリンクなし{background:#fff;color:#b35900;border:1px solid #e0a060}
 td.doc .sub.warn{color:#b35900}
 td.amtNg{color:#b35900;font-weight:600;background:#fff4e5}
+td.amtCell{cursor:pointer}
+td.amtAck{color:#6b7280}
 .cyStale{display:inline-block;margin-top:2px;padding:0 5px;border-radius:3px;background:#efe6ff;color:#5b2ea6;font-size:11px;font-weight:600;white-space:nowrap}
 .cyBox{margin-top:6px;padding:6px 8px;background:#f6f0ff;border:1px solid #ddccf7;border-radius:6px}
 .cyBox code{font-size:11px;word-break:break-all;background:#fff;padding:1px 4px;border-radius:3px}
@@ -403,7 +405,7 @@ const STATUS_ORDER = ['要確認','未登録','PDFなし','登録済（Claude）
 const SELECTABLE = new Set(['未登録','未確認','要確認']);
 const DONE = ['登録済（Claude）', 'TOKIUM記録あり', '確定済'];
 /* 同じ案件・同じ書類で別のファイルが登録済み → このファイルは別版（旧版など）で登録不要 */
-const isAltVersion = d => !DONE.includes(d.status) && d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs[d.type] || []).some(x => x !== d && DONE.includes(x.status));
+const isAltVersion = d => d.status === '別版' || !DONE.includes(d.status) && d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs[d.type] || []).some(x => x !== d && DONE.includes(x.status));
 const selectable = d => SELECTABLE.has(d.status) && !d.reverseRef && !isAltVersion(d);  // 反対種別で登録済み・別版の書類はClaudeに送らない
 /* 未登録＝未登録だと分かっている（DB30のPO列がまだSharePointリンク）／未確認＝TOKIUMを見ないと分からない（見積書・納品書など） */
 
@@ -678,8 +680,12 @@ function rebuild() {
   const manual = new Map();
   [...S.log].filter(r => r.match_method === 'manual' && r.drive_item_id).sort((a, b) => a.logged_at < b.logged_at ? -1 : 1)
     .forEach(r => { const d = ((r.d_number || '').toUpperCase().match(/D\d{4}/) || [''])[0]; d ? manual.set(r.drive_item_id, d) : manual.delete(r.drive_item_id); });  // 解除＝自動の紐づけに戻す
+  // 金額違いの確認済み（担当者が確認してOKにしたもの）：D番号|書類 → 最新の行。ファイル名も記録し、もっと新しいファイルが来たら効かない
+  S.amountOk = new Map();
+  [...S.log].filter(r => r.match_method === 'amount_ok').sort((a, b) => a.logged_at < b.logged_at ? -1 : 1)
+    .forEach(r => { const k = `${(r.d_number || '').toUpperCase()}|${r.doc_type}`; r.note === '（取消）' ? S.amountOk.delete(k) : S.amountOk.set(k, r); });
   for (const r of S.log) {
-    if (r.match_method === 'manual') continue;
+    if (r.match_method === 'manual' || r.match_method === 'amount_ok') continue;
     const ds = (r.d_number || '').toUpperCase().match(/D\d{4}/g) || [];
     for (const base of [r.drive_item_id, 'name:' + r.file_name].filter(x => x && x !== 'name:')) {
       if (ds.length) ds.forEach(d => put(`${base}|${d}`, r)); else put(base, r);
@@ -768,9 +774,30 @@ function rebuild() {
     S.excluded.push({ ...d, reason: 'Excel（同じ案件のPDFあり）' }); return false;
   });
   for (const doc of S.docs) for (const d of doc.dList) S.cases.get(d).docs[doc.type].push(doc);
+  // TOKIUMのCSVで分かるのは「このD番号の書類が登録済みか」だけで、どのファイルかは分からない。
+  // 同じ案件・同じ書類でファイルが複数あるとき、CSVだけが根拠の「TOKIUM記録あり」は1つにし、残りは「別版」にする。
+  // 処理ログで登録したファイルがあればそれを優先、無ければ日付がいちばん新しいファイル
+  for (const c of S.cases.values()) for (const t of DOC_TYPES) {
+    const ds = c.docs[t]; if (ds.length < 2) continue;
+    const byLog = ds.filter(d => DONE.includes(d.status) && d.logRow?.status);
+    const byCsv = ds.filter(d => d.status === 'TOKIUM記録あり' && !d.logRow?.status);
+    if (!byCsv.length || byLog.length + byCsv.length < 2) continue;
+    const keep = byLog.length ? null : [...byCsv].sort((a, b) => docDate(b.name) - docDate(a.name) || b.name.localeCompare(a.name))[0];
+    for (const d of byCsv) if (d !== keep && d.dList.length === 1) d.status = '別版';
+  }
   for (const k of [...S.selected]) if (!S.docs.some(d => d.key === k && selectable(d))) S.selected.delete(k);
   renderFilters(); render();
 }
+/* 登録対象として選ぶファイル：選べるもの（未登録など）のうち、日付がいちばん新しい1件（日付が同じなら全部） */
+function pickDocs(c, t) {
+  const sel = c.docs[t].filter(selectable); if (sel.length < 2) return sel;
+  const top = Math.max(...sel.map(d => docDate(d.name)));
+  return sel.filter(d => docDate(d.name) === top);
+}
+/* 同じ案件・同じ書類に、これより日付が新しい未登録のファイルがある（古い版を選んでいる） */
+const newerSibling = d => d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs[d.type] || []).find(x => x !== d && selectable(x) && docDate(x.name) > docDate(d.name));
+/* ファイル名の先頭の日付（「(再)20261015_…」「261008_…」も可）→ 20261015 の数値。無ければ 0 */
+const docDate = name => { const m = nfkc(name || '').match(/^(?:\([^)]*\))?\s*((?:20)?\d{6})(?!\d)/); return m ? +(m[1].length === 6 ? '20' + m[1] : m[1]) : 0; };
 const quoteKey = s => { const m = String(s || '').match(/M(\d{4,5})/i); return m ? 'M' + m[1] : ''; };
 const extractQuote = name => { const m = name.match(CONFIG.quoteNoRe); return m ? 'M' + m[1] : ''; };
 const extractDs = name => [...new Set([...name.matchAll(CONFIG.dNumberRe)].map(m => 'D' + m[1]))];
@@ -879,14 +906,15 @@ function docCell(c, t) {
   const nrNote = st === '不要' ? notRequiredBy(c, t) : '';
   const revNote = st === '要確認' && tkRef(c.d, t).length && !tkList(c.d, t).length && !(t === '請求書' && c.tokiumLink);
   const tip = t === '注文書' && (c.poState === 'empty' || c.poState === 'other') ? `（DB30のPO欄：${c.poState === 'empty' ? '空欄' : c.row[CONFIG.db30.po]}）` : '';
-  // 未登録の書類で、ファイル名の金額がDB30と違う（古い見積書・注文書の可能性）
-  const amNote = ds.filter(d => selectable(d) && amountMismatch(d)).map(d => { const m = amountMismatch(d);
+  // 未登録の書類で、ファイル名の金額がDB30と違う（古い見積書・注文書の可能性）。ファイルが複数なら日付がいちばん新しいものだけを見る
+  const amNote = pickDocs(c, t).filter(d => amountMismatch(d)).map(d => { const m = amountMismatch(d);
     return `<div class="sub warn" title="${esc(d.name)}：ファイル名 ${m.file.map(fmtYen).join('・')} ／ DB30 ${fmtYen(m.db30)}（税込 ${fmtYen(m.tax)}）。更新された書類がないか確認してください">⚠ 金額違い（ファイル${m.file.map(fmtYen).join('・')}／DB30 ${fmtYen(m.db30)}）</div>`; })[0] || '';
   const cy = cyStale(c, t);
   const cyNote = cy ? `<div class="sub cyStale" title="TOKIUMには登録済みですが、${esc(cy.where)}が${cy.state}です。TOKIUMのURLに書き換えてください（詳細から）">${CY_STALE}</div>` : '';
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
-  const cellPick = selDocs.length ? `<div><label class="cellPick" title="この書類をClaudeへの登録対象に入れる"><input type="checkbox" class="selCell" data-t="${t}" ${selDocs.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
+  const pk = pickDocs(c, t);  // 欄の「登録する」は、ファイルが複数なら日付がいちばん新しいものだけを選ぶ
+  const cellPick = selDocs.length ? `<div><label class="cellPick" title="${pk.length < selDocs.length ? `ファイルが${selDocs.length}件あるので、日付がいちばん新しい「${esc(pk[0].name)}」を登録対象に入れます（ほかを選ぶときは詳細から）` : 'この書類をClaudeへの登録対象に入れる'}"><input type="checkbox" class="selCell" data-t="${t}" ${pk.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
   return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${amNote}${cyNote}${cellPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
 }
 function updateLoadSummary() {
@@ -938,7 +966,7 @@ function render() {
   visibleCases = [...S.cases.values()].filter(caseMatches).sort((a, b) => b.d.localeCompare(a.d, 'ja', { numeric: true }));
   const LIMIT = 1500;
   $('#tblCases tbody').innerHTML = visibleCases.slice(0, LIMIT).map(c => {
-    const r = c.row; const sel = DOC_TYPES.flatMap(t => c.docs[t]).filter(selectable);
+    const r = c.row; const sel = DOC_TYPES.flatMap(t => pickDocs(c, t));
     const allOn = sel.length && sel.every(d => S.selected.has(d.key));
     const anySel = DOC_TYPES.some(t => c.docs[t].some(d => S.selected.has(d.key)));
     return `<tr data-d="${c.d}"${anySel ? ' class="hasSel"' : ''}><td>${sel.length ? `<input type="checkbox" class="selCase" ${allOn ? 'checked' : ''}>` : ''}</td>
@@ -1009,15 +1037,26 @@ function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   ['list', 'unmatched', 'excluded', 'import', 'log', 'rules'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
 }
-const docsOfCase = (c, types = $('#flType').value ? [$('#flType').value] : DOC_TYPES) => types.flatMap(t => c.docs[t]).filter(selectable);
+const docsOfCase = (c, types = $('#flType').value ? [$('#flType').value] : DOC_TYPES) => types.flatMap(t => pickDocs(c, t));
 $('#tblCases').onclick = e => {
   const tr = e.target.closest('tr[data-d]'); if (!tr) return;
   const c = S.cases.get(tr.dataset.d);
   if (e.target.classList.contains('selCase')) { for (const d of docsOfCase(c, DOC_TYPES)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
   // セル内の「登録する」チェック：その書類だけを選ぶ／外す（詳細画面は開かない）
-  if (e.target.classList.contains('selCell')) { for (const d of c.docs[e.target.dataset.t].filter(selectable)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
+  if (e.target.classList.contains('selCell')) { for (const d of pickDocs(c, e.target.dataset.t)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
   if (e.target.closest('.cellPick')) return;  // ラベル部分のクリック（チェックの切替はinput側で処理）
   if (e.target.closest('.pickFile')) { e.preventDefault(); openFilePicker(c, e.target.closest('.pickFile').dataset.t); return; }
+  const amt = e.target.closest('td.amtCell');
+  if (amt) {  // 金額違いの「確認してOK」／取り消し
+    const t = amt.dataset.t, name = amt.dataset.name, ack = amountAck(c.d, t, name);
+    const doc = c.docs[t].find(d => d.name === name);
+    const row = { doc_type: t, d_number: c.d, quote_no: quoteKey(c.row[CONFIG.db30.quote]), file_name: name, drive_item_id: doc?.id || '', match_method: 'amount_ok', status: '', partner: c.row[CONFIG.db30.customer] || '' };
+    if (ack) { if (confirm(`${c.d} ${t} の「金額確認済み」を取り消しますか？\n（理由：${ack.note}）`)) appendLog([{ ...row, note: '（取消）' }]); return; }
+    const reason = prompt(`${c.d} ${t}：ファイル名の金額とサイボウズの金額が違います。\n確認して問題なければ、理由を入力してください（例：1枚単価の見積のため／値引き後の金額で受注）。\n\n${name}`, '');
+    if (reason === null) return;
+    if (!reason.trim()) { alert('理由を入力してください'); return; }
+    appendLog([{ ...row, note: reason.trim() }]); return;
+  }
   if (e.target.closest('.openCase') || e.target.closest('td.doc')) { e.preventDefault(); openDrawer(c); }
 };
 $('#chkAllVisible').onchange = e => {
@@ -1170,11 +1209,12 @@ function docItem(d) {
   const lr = d.logRow;
   return `<div class="docitem" data-id="${esc(d.key)}">
     <div class="row">${selectable(d) ? `<input type="checkbox" class="selDoc" ${S.selected.has(d.key) ? 'checked' : ''}>` : ''}
-      <span class="badge b-${d.status}">${d.status === '登録済（Claude）' ? `登録済（Claude：${esc(claudeUser())}）` : d.status}</span>${isAltVersion(d) ? '<span class="badge b-対象外" title="同じ案件・同じ書類で別のファイルが登録済みのため、このファイルは登録しません（旧版など）">別版（登録不要）</span>' : ''}<span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
+      ${d.status === '別版' ? '' : `<span class="badge b-${d.status}">${d.status === '登録済（Claude）' ? `登録済（Claude：${esc(claudeUser())}）` : d.status}</span>`}${isAltVersion(d) ? '<span class="badge b-対象外" title="同じ案件・同じ書類で別のファイルが登録済みのため、このファイルは登録しません（旧版など）">別版（登録不要）</span>' : ''}<span class="small muted">${esc(d.method)}${d.sharedWith?.length ? `／同じファイルを ${d.sharedWith.join(', ')} でも使用` : ''}</span>
       <span style="margin-left:auto"></span>
       ${d.method === 'manual' && d.dList.length ? '<button class="small unlinkF" title="手動で指定した紐づけを外す">紐づけ解除</button>' : ''}
       ${d.file || d.webUrl ? '<button class="small openF">開く</button>' : ''}
       ${['登録済（Claude）', 'TOKIUM記録あり'].includes(d.status) ? '<button class="small primary doConfirm">確定済にする</button>' : ''}
+      ${d.status === '別版' ? '<button class="small doMarkReg" title="TOKIUMに登録したのがこのファイルなら押す（ログに記録し、ほかのファイルを別版にする）">こちらが登録済み</button>' : ''}
       ${d.status === '要確認' && !d.reverseRef ? '<button class="small primary doClose" data-kind="登録済" title="TOKIUMに手で登録した・内容を直した など、登録は済んでいる">クローズ：登録済み</button><button class="small doClose" data-kind="登録不要" title="旧版・登録しない書類など">クローズ：登録不要</button>' : ''}
       ${['登録済（Claude）', '要確認', '確定済', 'TOKIUM記録あり', '不要'].includes(d.status) && (d.status !== 'TOKIUM記録あり' && d.status !== '不要' || /クローズ/.test(d.logRow?.status || '')) ? '<button class="small doReset">未登録に戻す</button>' : ''}
     </div>
@@ -1212,6 +1252,9 @@ $('#dwBody').onclick = e => {
   if (e.target.classList.contains('selDoc')) { e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
   if (e.target.classList.contains('openF')) openFile(d);
   const base = () => { const r = S.cases.get(d.dList[0])?.row || {}; return { doc_type: d.type, d_number: d.dList.join(' '), quote_no: d.quote || r[CONFIG.db30.quote] || '', file_name: d.name, drive_item_id: d.id, match_method: d.method, partner: r[CONFIG.db30.customer] || '' }; };
+  if (e.target.classList.contains('doMarkReg')) {
+    appendLog([{ ...base(), status: '既存（TOKIUM登録済）', note: 'TOKIUMに登録済みのファイルとして指定（同じ書類のほかのファイルは別版）' }]); openDrawer(drawerCase);
+  }
   if (e.target.classList.contains('doClose')) {
     if (claudeUser() === '未設定') return alert('担当者名を入力してください');
     const kind = e.target.dataset.kind;
@@ -1321,7 +1364,7 @@ function amountMismatch(d) {
   const num = s => +String(s || '').replace(/[^\d]/g, '');
   const db30 = num(r[CONFIG.db30.amount]), tax = num(r[CONFIG.db30.amountTax]); if (!db30) return null;
   const amts = nameAmounts(d.name);
-  if (!amts.length || amts.some(a => a === db30 || a === tax)) return null;
+  if (!amts.length || amts.some(a => a === db30 || a === tax) || amountAck(d.dList[0], d.type, d.name)) return null;
   return { file: amts, db30, tax };
 }
 /* ファイル名の金額：「_」区切りで、先頭の日付以外の数字だけの部分（「・」で複数案もあり） */
@@ -1334,15 +1377,19 @@ function nameAmounts(name) {
 function amountCell(c, t) {
   const num = s => +String(s || '').replace(/[^\d]/g, '');
   const db30 = num(c.row[CONFIG.db30.amount]), tax = num(c.row[CONFIG.db30.amountTax]);
-  const docs = [...c.docs[t]].sort((a, b) => (DONE.includes(b.status) - DONE.includes(a.status)) || b.name.localeCompare(a.name));
+  const docs = [...c.docs[t]].sort((a, b) => docDate(b.name) - docDate(a.name) || b.name.localeCompare(a.name));  // 日付がいちばん新しいファイル
   let name = docs[0]?.name || '', src = 'ファイル';
   if (!name && t === '注文書') { name = (c.row[CONFIG.db30.po] || '').split(',').slice(1).join(','); src = 'DB30のPO欄'; }
   const a = nameAmounts(name);
   if (!a.length) return `<td class="num muted small" title="${esc(name ? `${src}：${name}（ファイル名に金額なし）` : 'ファイルなし')}">—</td>`;
   const ok = !db30 || a.some(x => x === db30 || x === tax);
+  const ack = !ok && amountAck(c.d, t, name);
   const more = c.docs[t].length > 1 ? `<div class="small muted">${c.docs[t].length}件</div>` : '';
-  return `<td class="num${ok ? '' : ' amtNg'}" title="${esc(`${src}：${name}${ok ? '' : `\nサイボウズ ${fmtYen(db30)}（税込 ${fmtYen(tax)}）と違います`}`)}">${a.map(fmtYen).join('<br>')}${src !== 'ファイル' ? '<div class="small muted">PO欄</div>' : ''}${more}</td>`;
+  const tip = `${src}：${name}${ok ? '' : `\nサイボウズ ${fmtYen(db30)}（税込 ${fmtYen(tax)}）と違います`}${ack ? `\n✓ 確認済み（${ack.user || ''} ${ack.logged_at || ''}）：${ack.note}\nクリックで取り消し` : ok ? '' : '\nクリックで「確認してOK」にできます（理由を記録）'}`;
+  return `<td class="num${ok ? '' : ack ? ' amtAck amtCell' : ' amtNg amtCell'}" data-t="${t}" data-name="${esc(name)}" title="${esc(tip)}">${a.map(fmtYen).join('<br>')}${src !== 'ファイル' ? '<div class="small muted">PO欄</div>' : ''}${ack ? `<div class="small" style="color:var(--st-done)">✓確認済</div>` : ''}${more}</td>`;
 }
+/* 金額違いを担当者が確認してOKにしたか（同じファイルに対してだけ有効） */
+function amountAck(d, t, name) { const r = S.amountOk?.get(`${d}|${t}`); return r && normName(r.file_name) === normName(name) ? r : null; }
 function dupSelections() {
   const g = {};
   for (const d of S.docs.filter(x => S.selected.has(x.key) && x.dList[0])) (g[`${d.dList[0]}|${d.type}`] ||= []).push(d);
@@ -1353,6 +1400,12 @@ async function doCopy(open) {
   const dup = dupSelections();
   if (dup.length && !confirm(`同じ案件・同じ書類で、ファイルを2件以上選んでいます。\n\n${dup.map(x => `■ ${x.d} ${x.type}（${x.docs.length}件）\n${x.docs.map(d => '   ・' + d.name).join('\n')}`).join('\n\n')}\n\n登録するのは通常1件です。使わない方の選択を外してください（「選択内容を見る」の × で外せます）。\n\nこのまま全部を登録対象にする場合は「OK」、選び直す場合は「キャンセル」を押してください。`)) {
     $('#copyMsg').textContent = `⚠ 選び直してください：${dup.map(x => `${x.d} ${x.type} ${x.docs.length}件`).join('、')}`;
+    $('#selPop').classList.remove('hidden'); renderSelPop();
+    return;
+  }
+  const old = S.docs.filter(x => S.selected.has(x.key)).map(d => ({ d, n: newerSibling(d) })).filter(x => x.n && !S.selected.has(x.n.key));
+  if (old.length && !confirm(`もっと新しい日付のファイルがあるのに、古いファイルを選んでいます。\n\n${old.map(({ d, n }) => `■ ${d.dList[0]} ${d.type}\n   選択中：${d.name}\n   新しい：${n.name}`).join('\n\n')}\n\n更新された書類を登録する場合は「キャンセル」を押し、新しい方を選び直してください。古い方で正しければ「OK」。`)) {
+    $('#copyMsg').textContent = `⚠ 新しいファイルがあります：${old.map(({ d }) => `${d.dList[0]} ${d.type}`).join('、')}`;
     $('#selPop').classList.remove('hidden'); renderSelPop();
     return;
   }
