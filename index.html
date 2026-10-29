@@ -85,6 +85,7 @@ td.num{text-align:right;white-space:nowrap}
 .mk.s-なし{background:transparent;color:var(--st-none);font-weight:400}
 .mk.s-POリンクなし{background:#fff;color:#b35900;border:1px solid #e0a060}
 td.doc .sub.warn{color:#b35900}
+td.amtNg{color:#b35900;font-weight:600;background:#fff4e5}
 .cyStale{display:inline-block;margin-top:2px;padding:0 5px;border-radius:3px;background:#efe6ff;color:#5b2ea6;font-size:11px;font-weight:600;white-space:nowrap}
 .cyBox{margin-top:6px;padding:6px 8px;background:#f6f0ff;border:1px solid #ddccf7;border-radius:6px}
 .cyBox code{font-size:11px;word-break:break-all;background:#fff;padding:1px 4px;border-radius:3px}
@@ -229,7 +230,9 @@ details summary{cursor:pointer}
     <th style="width:28px"><input type="checkbox" id="chkAllVisible" title="表示中の未登録をすべて選択"></th>
     <th style="width:84px">D番号<br><span class="small muted">見積No</span></th>
     <th>得意先<br><span class="small muted">品名</span></th>
-    <th style="width:88px;text-align:right">金額(税抜)</th>
+    <th style="width:84px;text-align:right" title="サイボウズ DB30 の売上金額（税抜）">サイボウズ<br><span class="small muted">税抜</span></th>
+    <th style="width:84px;text-align:right" title="見積書のファイル名に書かれた金額。サイボウズの金額（税抜・税込）と違えば橙色">見積書<br><span class="small muted">ファイル名</span></th>
+    <th style="width:84px;text-align:right" title="注文書のファイル名に書かれた金額（PDFが無ければDB30のPO欄のファイル名）。サイボウズの金額（税抜・税込）と違えば橙色">注文書<br><span class="small muted">ファイル名</span></th>
     <th style="width:92px">納品日<br><span class="small muted">登録者</span></th>
     <th class="st" style="width:82px">見積書</th><th class="st" style="width:82px">注文書</th><th class="st" style="width:82px">納品書</th><th class="st" style="width:82px">請求書</th>
   </tr></thead><tbody></tbody></table></div>
@@ -941,7 +944,7 @@ function render() {
     return `<tr data-d="${c.d}"${anySel ? ' class="hasSel"' : ''}><td>${sel.length ? `<input type="checkbox" class="selCase" ${allOn ? 'checked' : ''}>` : ''}</td>
       <td><a href="#" class="openCase">${c.d}</a><div class="small muted">${esc(r[C.quote])}</div></td>
       <td class="cp" title="${esc(r[C.customer] + ' ／ ' + r[C.item])}"><div>${esc(r[C.customer])}</div><div class="small muted">${esc(r[C.item])}</div></td>
-      <td class="num">${fmtYen(r[C.amount])}</td>
+      <td class="num">${fmtYen(r[C.amount])}</td>${amountCell(c, '見積書')}${amountCell(c, '注文書')}
       <td>${esc(r[C.deliveryDate])}<div class="small muted">${esc(r[C.user])}</div></td>
       ${DOC_TYPES.map(t => docCell(c, t)).join('')}</tr>`;
   }).join('');
@@ -1317,10 +1320,28 @@ function amountMismatch(d) {
   const r = S.cases.get(d.dList[0])?.row; if (!r || d.sharedWith?.length) return null;  // 1つのファイルを複数案件で使う（POを分割）ときは金額が合わないのが普通
   const num = s => +String(s || '').replace(/[^\d]/g, '');
   const db30 = num(r[CONFIG.db30.amount]), tax = num(r[CONFIG.db30.amountTax]); if (!db30) return null;
-  const toks = nfkc(d.name).replace(/\.[^.]+$/, '').split('_').map(s => s.trim());
-  const amts = toks.filter((s, i) => !(i === 0 && /^20\d{6}$/.test(s)) && /^\d{4,}(・\d{4,})*$/.test(s)).flatMap(s => s.split('・').map(Number));
+  const amts = nameAmounts(d.name);
   if (!amts.length || amts.some(a => a === db30 || a === tax)) return null;
   return { file: amts, db30, tax };
+}
+/* ファイル名の金額：「_」区切りで、先頭の日付以外の数字だけの部分（「・」で複数案もあり） */
+function nameAmounts(name) {
+  const toks = nfkc(name || '').replace(/\.[^.]+$/, '').split('_').map(s => s.trim());
+  return toks.filter((s, i) => !(i === 0 && /^(20)?\d{6}$/.test(s)) && /^\d{4,}(・\d{4,})*$/.test(s)).flatMap(s => s.split('・').map(Number));
+}
+/* 一覧の「見積書」「注文書」金額の列：登録済みのファイル → 新しい日付のファイル の順に1つ選び、ファイル名の金額を出す。
+   サイボウズの金額（税抜・税込）と違えば橙色。注文書でPDFが無ければ DB30 のPO欄のファイル名から */
+function amountCell(c, t) {
+  const num = s => +String(s || '').replace(/[^\d]/g, '');
+  const db30 = num(c.row[CONFIG.db30.amount]), tax = num(c.row[CONFIG.db30.amountTax]);
+  const docs = [...c.docs[t]].sort((a, b) => (DONE.includes(b.status) - DONE.includes(a.status)) || b.name.localeCompare(a.name));
+  let name = docs[0]?.name || '', src = 'ファイル';
+  if (!name && t === '注文書') { name = (c.row[CONFIG.db30.po] || '').split(',').slice(1).join(','); src = 'DB30のPO欄'; }
+  const a = nameAmounts(name);
+  if (!a.length) return `<td class="num muted small" title="${esc(name ? `${src}：${name}（ファイル名に金額なし）` : 'ファイルなし')}">—</td>`;
+  const ok = !db30 || a.some(x => x === db30 || x === tax);
+  const more = c.docs[t].length > 1 ? `<div class="small muted">${c.docs[t].length}件</div>` : '';
+  return `<td class="num${ok ? '' : ' amtNg'}" title="${esc(`${src}：${name}${ok ? '' : `\nサイボウズ ${fmtYen(db30)}（税込 ${fmtYen(tax)}）と違います`}`)}">${a.map(fmtYen).join('<br>')}${src !== 'ファイル' ? '<div class="small muted">PO欄</div>' : ''}${more}</td>`;
 }
 function dupSelections() {
   const g = {};
