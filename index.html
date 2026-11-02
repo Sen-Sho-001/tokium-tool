@@ -782,22 +782,28 @@ function rebuild() {
     const byLog = ds.filter(d => DONE.includes(d.status) && d.logRow?.status);
     const byCsv = ds.filter(d => d.status === 'TOKIUM記録あり' && !d.logRow?.status);
     if (!byCsv.length || byLog.length + byCsv.length < 2) continue;
-    const keep = byLog.length ? null : [...byCsv].sort((a, b) => docDate(b.name) - docDate(a.name) || b.name.localeCompare(a.name))[0];
+    const keep = byLog.length ? null : [...byCsv].sort(newestFirst)[0];
     for (const d of byCsv) if (d !== keep && d.dList.length === 1) d.status = '別版';
   }
   for (const k of [...S.selected]) if (!S.docs.some(d => d.key === k && selectable(d))) S.selected.delete(k);
   renderFilters(); render();
 }
-/* 登録対象として選ぶファイル：選べるもの（未登録など）のうち、日付がいちばん新しい1件（日付が同じなら全部） */
+/* 登録対象として選ぶファイル：選べるもの（未登録など）のうち、いちばん新しい1件（枝番・日付が同じなら全部） */
 function pickDocs(c, t) {
   const sel = c.docs[t].filter(selectable); if (sel.length < 2) return sel;
-  const top = Math.max(...sel.map(d => docDate(d.name)));
-  return sel.filter(d => docDate(d.name) === top);
+  const top = [...sel].sort(newestFirst)[0];
+  return sel.filter(d => rankCmp(d, top) === 0);
 }
-/* 同じ案件・同じ書類に、これより日付が新しい未登録のファイルがある（古い版を選んでいる） */
-const newerSibling = d => d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs[d.type] || []).find(x => x !== d && selectable(x) && docDate(x.name) > docDate(d.name));
+/* 同じ案件・同じ書類に、これより新しい未登録のファイルがある（古い版を選んでいる） */
+const newerSibling = d => d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs[d.type] || []).find(x => x !== d && selectable(x) && rankCmp(x, d) < 0);
 /* ファイル名の先頭の日付（「(再)20261015_…」「261008_…」も可）→ 20261015 の数値。無ければ 0 */
 const docDate = name => { const m = nfkc(name || '').match(/^(?:\([^)]*\))?\s*((?:20)?\d{6})(?!\d)/); return m ? +(m[1].length === 6 ? '20' + m[1] : m[1]) : 0; };
+/* 同じ書類の新旧：同じ見積Noなら枝番（M13511 < M13511-1 < M13511-2）を優先、それ以外はファイル名の日付。
+   ファイル名の日付の打ち間違い（例：202601022）があっても、枝番で新しい方を選べるように。負なら a の方が新しい */
+const quoteBranch = name => { const m = nfkc(name || '').match(/(?:^|[_\s])M(\d{4,5})(?:-(\d+))?(?!\d)/); return m ? { q: m[1], b: +(m[2] || 0) } : null; };
+const rankCmp = (a, b) => { const qa = quoteBranch(a.name), qb = quoteBranch(b.name);
+  return qa && qb && qa.q === qb.q && qa.b !== qb.b ? qb.b - qa.b : docDate(b.name) - docDate(a.name); };
+const newestFirst = (a, b) => rankCmp(a, b) || b.name.localeCompare(a.name);
 const quoteKey = s => { const m = String(s || '').match(/M(\d{4,5})/i); return m ? 'M' + m[1] : ''; };
 const extractQuote = name => { const m = name.match(CONFIG.quoteNoRe); return m ? 'M' + m[1] : ''; };
 const extractDs = name => [...new Set([...name.matchAll(CONFIG.dNumberRe)].map(m => 'D' + m[1]))];
@@ -1328,6 +1334,12 @@ function buildPrompt() {
   return `TOKIUMに、次の書類を1件ずつ登録してください。
 ※返答・途中の報告・確認の質問・最後のまとめは、すべて日本語で書いてください（RESULT行の形式はそのまま）。
 
+【進め方】
+・途中で止まらず、最後の案件まで続けてください。1件で問題があっても、その件は status を「要確認」にして note に理由を書き、次の案件へ進む。
+・途中で確認の質問はしない（判断に迷うものは「要確認」にして先へ進む）。例外は、PDFのアップロードがどうしてもできないときだけ（そのときは、ファイル名を示して手動でのドラッグを依頼する）。
+・1件終わるごとに、その件の RESULT 行を1行出力する（途中で止まっても結果が残るように）。
+・登録画面の入力途中で中断した件は、入力内容を破棄してから次へ進む（登録ボタンは押さない）。
+
 【手順（1件ごと）】
 1. 重複の確認：「国税関係書類一覧」の「指定した条件で検索」で、D番号（例：D9430）を検索する。同じ書類種別で、書類タイトルかメモに同じD番号がある登録が既にあれば、登録せず status を「既存」にする。
 2. 「国税関係書類を登録する」→「手入力」を開く。
@@ -1349,7 +1361,7 @@ function buildPrompt() {
 【対象】
 ${lines.join('\n')}
 
-【最後に】1件1行で次の形式で結果を出力してください（ヘッダー不要。値にカンマを含む場合は半角の " で囲む（全角の ” “ は使わない）。file_name は指定のファイル名をそのまま。status は「登録済」「既存」「要確認」のいずれか。note も日本語）：
+【最後に】処理できなかった件も含めて【対象】の全件について、1件1行で次の形式で結果をまとめて出力してください（ヘッダー不要。値にカンマを含む場合は半角の " で囲む（全角の ” “ は使わない）。file_name は指定のファイル名をそのまま。status は「登録済」「既存」「要確認」のいずれか。note も日本語）：
 RESULT,<doc_type>,<d_number>,<quote_no>,<file_name>,<partner>,<doc_date>,<amount>,<status>,<note>`;
 }
 async function copyText(t) {
@@ -1370,14 +1382,15 @@ function amountMismatch(d) {
 /* ファイル名の金額：「_」区切りで、先頭の日付以外の数字だけの部分（「・」で複数案もあり） */
 function nameAmounts(name) {
   const toks = nfkc(name || '').replace(/\.[^.]+$/, '').split('_').map(s => s.trim());
-  return toks.filter((s, i) => !(i === 0 && /^(20)?\d{6}$/.test(s)) && /^\d{4,}(・\d{4,})*$/.test(s)).flatMap(s => s.split('・').map(Number));
+  return toks.filter((s, i) => !(i === 0 && /^(?:\d{6}|20\d{6,7})$/.test(s)) &&   // 先頭は日付（打ち間違いの9桁 202601022 も日付扱い）
+/^\d{4,}(・\d{4,})*$/.test(s)).flatMap(s => s.split('・').map(Number));
 }
 /* 一覧の「見積書」「注文書」金額の列：登録済みのファイル → 新しい日付のファイル の順に1つ選び、ファイル名の金額を出す。
    サイボウズの金額（税抜・税込）と違えば橙色。注文書でPDFが無ければ DB30 のPO欄のファイル名から */
 function amountCell(c, t) {
   const num = s => +String(s || '').replace(/[^\d]/g, '');
   const db30 = num(c.row[CONFIG.db30.amount]), tax = num(c.row[CONFIG.db30.amountTax]);
-  const docs = [...c.docs[t]].sort((a, b) => docDate(b.name) - docDate(a.name) || b.name.localeCompare(a.name));  // 日付がいちばん新しいファイル
+  const docs = [...c.docs[t]].sort(newestFirst);  // いちばん新しいファイル（同じ見積Noなら枝番、それ以外は日付）
   let name = docs[0]?.name || '', src = 'ファイル';
   if (!name && t === '注文書') { name = (c.row[CONFIG.db30.po] || '').split(',').slice(1).join(','); src = 'DB30のPO欄'; }
   const a = nameAmounts(name);
@@ -1463,6 +1476,11 @@ $('#btnParse').onclick = () => {
     if (doc && doc.dList.length && e.d && !doc.dList.includes(e.d)) e.warn = `D番号がツールの紐づけ（${doc.dList.join(',')}）と違う`;
     if (doc && !e.d && doc.dList.length) e.d = doc.dList.join(' ');
     out.push(e);
+  }
+  // 1件ごとの途中報告と最後のまとめで同じ書類のRESULT行が2回出る → 同じ書類は後の行だけ残す
+  for (let i = out.length - 1; i >= 0; i--) {
+    const k = out[i].doc?.key;
+    if (k && out.findIndex(x => x.doc?.key === k) < i) out.splice(out.findIndex(x => x.doc?.key === k), 1);
   }
   S.lastParsed = out;
   const okN = out.filter(e => !e.err).length;
