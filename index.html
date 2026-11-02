@@ -110,7 +110,9 @@ a.pickFile{color:#b35900;text-decoration:underline dotted}
 tr.hasSel>td{background:#fffbe0}
 td.doc.picked{box-shadow:inset 0 0 0 2px #e0a800}
 td.doc .pickTag{font-size:10px;color:#9a6a00;font-weight:700}
-.refreshBox{display:flex;gap:6px;align-items:center;color:#8a7a3a}
+.refreshBox{display:flex;gap:6px;align-items:center;color:#8a7a3a;margin-left:auto}
+.actionbar .msgRow{flex-basis:100%;display:flex;gap:10px;align-items:center}
+.actionbar .msgRow:not(:has(span:not(:empty))){display:none}  /* メッセージが無いときは2段目を出さない */
 .refreshBox button.ghost{background:none;border:1px solid transparent;color:#8a7a3a;font-size:11px;padding:1px 6px;cursor:pointer}
 .refreshBox button.ghost:hover{border-color:#d8c98a;background:#fff6cf}
 .refreshBox button.ghost:disabled{opacity:.5;cursor:default}
@@ -291,12 +293,11 @@ details summary{cursor:pointer}
   <button class="primary" id="btnCopy" disabled>Claudeへの指示文をコピー ＆ TOKIUMを開く</button>
   <button id="btnCopyOnly" disabled>指示文をコピーのみ</button>
   <button id="btnSelClear">選択解除</button>
-  <span id="copyMsg" class="small"></span>
-  <span id="unsaved" class="small" style="margin-left:auto;color:var(--st-todo)"></span>
   <span class="refreshBox" title="TOKIUM・サイボウズで変更した内容を、次の自動更新を待たずに今すぐ取り直します。取得は管理者PCで行います（ほかのPCからは依頼が届くまで数分〜十数分）">
     <span class="small" id="tkRefreshMsg"></span><button class="ghost" id="btnTkRefresh" title="TOKIUMで登録・変更した内容を、今すぐTOKIUMからCSVを書き出して反映します（管理者PCで約1分、ほかのPCからは数分〜十数分）">↻ TOKIUM</button>
     <span class="small" id="cyRefreshMsg"></span><button class="ghost" id="btnCyRefresh" title="サイボウズで変更した内容（DB30・DB24）を、今すぐサイボウズから書き出して反映します（管理者PCで約5分、ほかのPCからは10分前後）">↻ サイボウズ</button>
   </span>
+  <div class="msgRow"><span id="copyMsg" class="small"></span><span id="unsaved" class="small" style="margin-left:auto;color:var(--st-todo)"></span></div>
 </div>
 
 </main>
@@ -763,11 +764,12 @@ function rebuild() {
                    : (latest.get(doc.id) || latest.get('name:' + doc.name));
       e.logRow = lr || null;
       const c = d && S.cases.get(d);
+      const hasTk = c && (tkList(d, e.type).length || e.type === '請求書' && c.tokiumLink || e.type === '注文書' && c.poTokium);
+      const logSt = lr && lr.status ? normStatus(lr.status) : '';
       if (!e.hasPdf) e.status = 'PDFなし';
-      else if (lr && lr.status) e.status = normStatus(lr.status);
-      else if (c && tkList(d, e.type).length) e.status = 'TOKIUM記録あり';
-      else if (c && e.type === '請求書' && c.tokiumLink) e.status = 'TOKIUM記録あり';
-      else if (c && e.type === '注文書' && c.poTokium) e.status = 'TOKIUM記録あり';
+      // ログが「要確認／未登録」でも、その後TOKIUMに登録が見つかれば「TOKIUM記録あり」に上書きする（ログの状態のままにしない）
+      else if (logSt && !(hasTk && (logSt === '要確認' || logSt === '未登録'))) e.status = logSt;
+      else if (hasTk) { e.status = 'TOKIUM記録あり'; if (logSt) e.tkOverride = logSt; }
       else if (c && isNotRequired(c, e.type)) e.status = '不要';  // 書類不要の取引先（ファイルがあっても登録対象外）
       else if (c && tkRef(d, e.type).length) { e.status = '要確認'; e.reverseRef = true; }  // TOKIUMに反対の種別（●相手）で登録あり
       else if (c && e.type === '注文書' && c.poKind && !/^注文書/.test(c.poKind)) { e.status = '要確認'; e.reverseRef = true; }  // PO欄のTOKIUM URLが別の種別（注文請書など）＝登録はあるが種別違い。Claudeに二重登録させない
@@ -788,8 +790,8 @@ function rebuild() {
   // 処理ログで登録したファイルがあればそれを優先、無ければ日付がいちばん新しいファイル
   for (const c of S.cases.values()) for (const t of DOC_TYPES) {
     const ds = c.docs[t]; if (ds.length < 2) continue;
-    const byLog = ds.filter(d => DONE.includes(d.status) && d.logRow?.status);
-    const byCsv = ds.filter(d => d.status === 'TOKIUM記録あり' && !d.logRow?.status);
+    const byLog = ds.filter(d => DONE.includes(d.status) && d.logRow?.status && !d.tkOverride);
+    const byCsv = ds.filter(d => d.status === 'TOKIUM記録あり' && (!d.logRow?.status || d.tkOverride));
     if (!byCsv.length || byLog.length + byCsv.length < 2) continue;
     const keep = byLog.length ? null : [...byCsv].sort(newestFirst)[0];
     for (const d of byCsv) if (d !== keep && d.dList.length === 1) d.status = '別版';
@@ -1233,7 +1235,8 @@ function docItem(d) {
       ${d.status === '要確認' && !d.reverseRef ? '<button class="small primary doClose" data-kind="登録済" title="TOKIUMに手で登録した・内容を直した など、登録は済んでいる">クローズ：登録済み</button><button class="small doClose" data-kind="登録不要" title="旧版・登録しない書類など">クローズ：登録不要</button>' : ''}
       ${['登録済（Claude）', '要確認', '確定済', 'TOKIUM記録あり', '不要'].includes(d.status) && (d.status !== 'TOKIUM記録あり' && d.status !== '不要' || /クローズ/.test(d.logRow?.status || '')) ? '<button class="small doReset">未登録に戻す</button>' : ''}
     </div>
-    <div class="nm small">${esc(d.name)}</div>
+    <div class="nm small">${esc(d.name)}</div>${d.tkOverride ? `
+    <div class="small" style="color:var(--st-done,#2e7d32)">処理ログでは「${esc(d.tkOverride)}」でしたが、その後TOKIUMに登録があったため「TOKIUM記録あり」にしています</div>` : ''}
     <div class="small muted">${esc(d.rel)}${d.others.length ? `　（同名：${esc(d.others.join(', '))}）` : ''}</div>
     ${lr ? `<div class="small">ログ：${esc(lr.logged_at)} ${esc(lr.user)} 「${esc(lr.status)}」${lr.note ? ' ' + esc(lr.note) : ''}</div>` : ''}
   </div>`;
