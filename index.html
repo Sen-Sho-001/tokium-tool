@@ -110,6 +110,10 @@ a.pickFile{color:#b35900;text-decoration:underline dotted}
 tr.hasSel>td{background:#fffbe0}
 td.doc.picked{box-shadow:inset 0 0 0 2px #e0a800}
 td.doc .pickTag{font-size:10px;color:#9a6a00;font-weight:700}
+.refreshBox{display:flex;gap:6px;align-items:center;color:#8a7a3a}
+.refreshBox button.ghost{background:none;border:1px solid transparent;color:#8a7a3a;font-size:11px;padding:1px 6px;cursor:pointer}
+.refreshBox button.ghost:hover{border-color:#d8c98a;background:#fff6cf}
+.refreshBox button.ghost:disabled{opacity:.5;cursor:default}
 .actionbar{position:sticky;bottom:0;background:#fffbe8;border:1px solid #e8d98a;border-radius:6px;padding:8px 12px;margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 #drawer{position:fixed;top:0;right:0;width:min(640px,100vw);height:100vh;background:#fff;border-left:1px solid var(--line);box-shadow:-6px 0 16px #0002;transform:translateX(105%);transition:transform .15s;z-index:10;display:flex;flex-direction:column}
 #drawer.open{transform:none}
@@ -146,8 +150,7 @@ details summary{cursor:pointer}
 
 <!-- ===== 読み込み ===== -->
 <details class="panel" id="loadBox" open>
-  <summary id="loadSum"><b>データの読み込み</b><span id="loadSumText" class="small muted"></span><span class="small muted loadHint">（クリックで開閉）</span>
-    <button class="small" id="btnTkRefresh" title="TOKIUMで登録・変更した内容を、今すぐTOKIUMからCSVを書き出して反映します（2〜5分）">🔄 TOKIUMの最新を取得</button><span class="small" id="tkRefreshMsg"></span></summary>
+  <summary id="loadSum"><b>データの読み込み</b><span id="loadSumText" class="small muted"></span><span class="small muted loadHint">（クリックで開閉）</span></summary>
   <div style="margin-top:8px">
   <div class="ld" style="margin-bottom:8px;border-style:solid;border-color:#9db8e3;background:#f5f9ff">
     <div class="row">
@@ -290,6 +293,10 @@ details summary{cursor:pointer}
   <button id="btnSelClear">選択解除</button>
   <span id="copyMsg" class="small"></span>
   <span id="unsaved" class="small" style="margin-left:auto;color:var(--st-todo)"></span>
+  <span class="refreshBox" title="TOKIUM・サイボウズで変更した内容を、次の自動更新を待たずに今すぐ取り直します。取得は管理者PCで行います（ほかのPCからは依頼が届くまで数分〜十数分）">
+    <span class="small" id="tkRefreshMsg"></span><button class="ghost" id="btnTkRefresh" title="TOKIUMで登録・変更した内容を、今すぐTOKIUMからCSVを書き出して反映します（管理者PCで約1分、ほかのPCからは数分〜十数分）">↻ TOKIUM</button>
+    <span class="small" id="cyRefreshMsg"></span><button class="ghost" id="btnCyRefresh" title="サイボウズで変更した内容（DB30・DB24）を、今すぐサイボウズから書き出して反映します（管理者PCで約5分、ほかのPCからは10分前後）">↻ サイボウズ</button>
+  </span>
 </div>
 
 </main>
@@ -1601,6 +1608,63 @@ async function refreshTokiumLocal(msg) {
   msg(`✓ TOKIUM一覧を更新しました（${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}・${Math.round((Date.now() - t0) / 1000)}秒）`);
   return true;
 }
+/* サイボウズ（DB30・DB24）を今すぐ取り直す。管理者PCなら常駐プログラムに直接、ほかのPCはSharePoint経由で管理者PCに依頼する */
+const LOCAL_CY = 'http://127.0.0.1:8767/cybozu';
+let cyRefreshBusy = false;
+async function refreshCybozuNow() {
+  const msg = t => { $('#cyRefreshMsg').textContent = t; };
+  if (cyRefreshBusy) return;
+  cyRefreshBusy = true; $('#btnCyRefresh').disabled = true;
+  const get = (p, ms = 3000) => fetch(LOCAL_CY + p, { signal: AbortSignal.timeout(ms) });
+  const fileOf = async p => { const res = await get(p, 60000); if (!res.ok) throw new Error(p.slice(1) + ' のファイルがありません');
+    const name = new TextDecoder().decode(new Uint8Array((res.headers.get('X-File-Name') || '').match(/../g).map(h => parseInt(h, 16))));
+    return { name, mtime: res.headers.get('X-File-Mtime') || '', ...toObjects(parseCSV(decodeCSV(await res.arrayBuffer()))) }; };
+  try {
+    msg('確認しています…');
+    let local = false; try { local = (await get('/status', 2000)).ok; } catch {}
+    if (!local) { await refreshCybozuViaSharePoint(msg); return; }
+    let st = await (await fetch(LOCAL_CY + '/refresh', { method: 'POST' })).json();
+    const t0 = Date.now();
+    while (st.state === 'running') {
+      await sleep(3000);
+      st = await (await get('/status')).json();
+      msg(`⏳ ${st.message || 'サイボウズから書き出し中…'}（${Math.round((Date.now() - t0) / 1000)}秒）`);
+      if (Date.now() - t0 > 31 * 60 * 1000) { msg('✗ 30分たっても終わりませんでした'); return; }
+    }
+    if (st.state !== 'done') { msg('✗ ' + st.message); return; }
+    const t = s => s.slice(5, 16).replace('T', ' ').replace('-', '/');
+    const db30 = await fileOf('/db30'), db24 = await fileOf('/db24');
+    S.db30Ver = `${db30.name}|local ${db30.mtime}`;
+    setDb30(db30.headers, db30.data, `このPC ${db30.name}（${t(db30.mtime)}版）`);
+    setDb24(db24.data, `このPC ${db24.name}（${t(db24.mtime)}版）`, `${db24.name}|local ${db24.mtime}`);
+    rebuild(); render();
+    msg(`✓ DB30・DB24を更新しました（${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}・${Math.round((Date.now() - t0) / 1000)}秒）`);
+  } catch (e) { msg('✗ ' + e.message); }
+  finally { cyRefreshBusy = false; $('#btnCyRefresh').disabled = false; }
+}
+/* 管理者PC以外：SharePointに依頼ファイルを置き、管理者PCの監視タスクが拾う（TOKIUMと同じしくみ） */
+async function refreshCybozuViaSharePoint(msg) {
+  if (!G.account) { msg('先にサインインしてください'); return; }
+  const folder = CONFIG.graph.tokiumFolder, rid = new Date().toISOString();
+  msg('依頼を送っています…');
+  await graphPutText(`${folder}/_cybozu_request.json`, JSON.stringify({ requested_at: rid, by: G.account.name || G.account.username }));
+  const t0 = Date.now();
+  for (;;) {
+    await sleep(15000);
+    const sec = Math.round((Date.now() - t0) / 1000);
+    const st = await graphGetJson(`${folder}/_cybozu_status.json`);
+    if (st && st.request === rid && st.state === 'done') {
+      msg('DB30・DB24を読み直しています…');
+      await sleep(20000);  // コピーしたDB30がSharePointに上がるのを少し待つ
+      await graphLoadDb30(); await graphLoadDb24().catch(() => {}); rebuild(); render();
+      msg(`✓ DB30・DB24を更新しました（${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}）`);
+      return;
+    }
+    if (st && st.request === rid && (st.state === 'error' || st.state === 'skipped')) { msg('✗ ' + st.message); return; }
+    if (sec > 30 * 60) { msg('✗ 30分待っても終わりませんでした（取得を担当するPCが止まっている可能性があります）'); return; }
+    msg(st && st.request === rid && st.state === 'running' ? `⏳ ${st.message}（${sec}秒）` : `⏳ 取得の開始を待っています…（${Math.floor(sec / 60)}分${sec % 60}秒。管理者PCに依頼が届くまで数分〜十数分）`);
+  }
+}
 async function refreshTokiumNow() {
   const msg = t => { $('#tkRefreshMsg').textContent = t; };
   if (tkRefreshBusy) return;
@@ -1868,6 +1932,7 @@ async function graphResolveShares() {
 /* 自動読み込み（開いたとき・サインインしたとき）。読み込み中なら何もしない */
 function autoLoad() { if (!G.loading) $('#btnScan').onclick(); }
 $('#btnTkRefresh').onclick = e => { e.preventDefault(); e.stopPropagation(); refreshTokiumNow(); };  // summary内なので開閉させない
+$('#btnCyRefresh').onclick = e => { e.preventDefault(); e.stopPropagation(); refreshCybozuNow(); };
 $('#btnScan').onclick = async () => {
   if (G.loading) return;
   G.loading = true; updateLoadSummary();
