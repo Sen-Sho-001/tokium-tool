@@ -1925,20 +1925,37 @@ async function graphScan(years) {
   }
   return { files, skipped, errors, yearFolders: yearFolders.map(y => y.name) };
 }
+/* 共有リンクから取ったファイルを、書類一覧（S.rawFiles）に加える。場所は「…root:/本社/2026年_経理(相手方受領)/顧客/注文書」の形 */
+function addSharedFile(it) {
+  if (!it?.file || S.rawFiles.has(it.id)) return;
+  const dir = decodeURIComponent((it.parentReference?.path || '').replace(/^.*?root:\/?/, ''));
+  if (!dir.startsWith(CONFIG.graph.baseFolder + '/')) return;
+  const rel = dir + '/' + it.name, p = parsePath(rel); if (!p) return;
+  S.rawFiles.set(it.id, { ...p, id: it.id, rel, webUrl: it.webUrl, file: null, modified: it.lastModifiedDateTime });
+}
 /* DB30のPO共有リンク → driveItem id（一度解決したものはブラウザに保存して再利用） */
 async function graphResolveShares() {
   let cache = {}; try { cache = JSON.parse(lsGet('tokium_share_cache') || '{}'); } catch {}
   const urls = [...new Set([...S.cases.values()].map(c => (c.row[CONFIG.db30.po] || '').trim()).filter(u => /^https:\/\/[^/]*sharepoint\.com\//.test(u)))];
   // 解決できなかったリンクは '!時刻' で覚え、6時間たったらもう一度試す（貼った直後で権限が付く前などに一度失敗しても、ずっと未検出にしない）
   const todo = urls.filter(u => !(u in cache) || /^!?$/.test(cache[u]) || cache[u][0] === '!' && Date.now() - +cache[u].slice(1) > 6 * 3600e3);
-  if (todo.length) {
+  const ok = id => id && id[0] !== '!';
+  // 解決済みでも、リンク先のファイルが書類一覧に無いもの（一覧を取った後にアップロード・DB30に貼られたPO）はもう一度取りに行き、一覧に加える。
+  // 一覧に加えられない（対象外フォルダなど）ものは、このページを開いている間は再確認しない
+  const fetched = G.shareFetched ||= new Set();
+  const missing = urls.filter(u => ok(cache[u]) && !S.rawFiles.has(cache[u]) && !fetched.has(u));
+  const ask = [...todo, ...missing];
+  if (ask.length) {
     const enc = u => 'u!' + btoa(unescape(encodeURIComponent(u))).replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
-    const res = await gBatch(todo.map(u => ({ url: `/shares/${enc(u)}/driveItem?$select=id,name`, ctx: u })),
+    const res = await gBatch(ask.map(u => ({ url: `/shares/${enc(u)}/driveItem?$select=id,name,file,webUrl,parentReference,lastModifiedDateTime`, ctx: u })),
       (n, t) => $('#gsProg').textContent = `顧客POの共有リンクを解決中… ${n}/${t}`);
-    for (const r of res) if (r.status === 200) cache[r.req.ctx] = r.body.id; else if (r.status === 404 || r.status === 403) cache[r.req.ctx] = '!' + Date.now();
+    for (const r of res) {
+      const u = r.req.ctx; fetched.add(u);
+      if (r.status === 200) { cache[u] = r.body.id; addSharedFile(r.body); }
+      else if (r.status === 404 || r.status === 403) cache[u] = '!' + Date.now();
+    }
     lsSet('tokium_share_cache', JSON.stringify(cache));
   }
-  const ok = id => id && id[0] !== '!';
   S.shareMap = Object.fromEntries(Object.entries(cache).filter(([, id]) => ok(id)));
   return { total: urls.length, resolved: urls.filter(u => ok(cache[u])).length };
 }
