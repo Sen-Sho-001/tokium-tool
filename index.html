@@ -240,9 +240,9 @@ details summary{cursor:pointer}
     <th style="width:28px"><input type="checkbox" id="chkAllVisible" title="表示中の未登録をすべて選択"></th>
     <th style="width:84px">D番号<br><span class="small muted">見積No</span></th>
     <th>得意先<br><span class="small muted">品名</span></th>
-    <th style="width:84px;text-align:right" title="サイボウズ DB30 の売上金額（税抜）">サイボウズ<br><span class="small muted">税抜</span></th>
-    <th style="width:84px;text-align:right" title="見積書のファイル名に書かれた金額。サイボウズの金額（税抜・税込）と違えば橙色">見積書<br><span class="small muted">ファイル名</span></th>
-    <th style="width:84px;text-align:right" title="注文書のファイル名に書かれた金額（PDFが無ければDB30のPO欄のファイル名）。サイボウズの金額（税抜・税込）と違えば橙色">注文書<br><span class="small muted">ファイル名</span></th>
+    <th style="width:84px;text-align:right" title="仕入販売管理（サイボウズ DB30）の売上金額（税抜）">仕入販売管理<br><span class="small muted">税抜</span></th>
+    <th style="width:84px;text-align:right" title="見積書のファイル名に書かれた金額。仕入販売管理の金額（税抜・税込）と違えば橙色">見積書<br><span class="small muted">ファイル名</span></th>
+    <th style="width:84px;text-align:right" title="注文書のファイル名に書かれた金額（PDFが無ければDB30のPO欄のファイル名）。仕入販売管理の金額（税抜・税込）と違えば橙色">注文書<br><span class="small muted">ファイル名</span></th>
     <th style="width:92px">納品日<br><span class="small muted">登録者</span></th>
     <th class="st" style="width:82px">見積書</th><th class="st" style="width:82px">注文書</th><th class="st" style="width:82px">納品書</th><th class="st" style="width:82px">請求書</th>
   </tr></thead><tbody></tbody></table></div>
@@ -1109,7 +1109,7 @@ $('#tblCases').onclick = e => {
     const doc = c.docs[t].find(d => d.name === name);
     const row = { doc_type: t, d_number: c.d, quote_no: quoteKey(c.row[CONFIG.db30.quote]), file_name: name, drive_item_id: doc?.id || '', match_method: 'amount_ok', status: '', partner: c.row[CONFIG.db30.customer] || '' };
     if (ack) { if (confirm(`${c.d} ${t} の「金額確認済み」を取り消しますか？\n（理由：${ack.note}）`)) appendLog([{ ...row, note: '（取消）' }]); return; }
-    const reason = prompt(`${c.d} ${t}：ファイル名の金額とサイボウズの金額が違います。\n確認して問題なければ、理由を入力してください（例：1枚単価の見積のため／値引き後の金額で受注）。\n\n${name}`, '');
+    const reason = prompt(`${c.d} ${t}：ファイル名の金額と仕入販売管理の金額が違います。\n確認して問題なければ、理由を入力してください（例：1枚単価の見積のため／値引き後の金額で受注）。\n\n${name}`, '');
     if (reason === null) return;
     if (!reason.trim()) { alert('理由を入力してください'); return; }
     appendLog([{ ...row, note: reason.trim() }]); return;
@@ -1438,7 +1438,7 @@ function nameAmounts(name) {
 /^\d{4,}(・\d{4,})*$/.test(s)).flatMap(s => s.split('・').map(Number));
 }
 /* 一覧の「見積書」「注文書」金額の列：登録済みのファイル → 新しい日付のファイル の順に1つ選び、ファイル名の金額を出す。
-   サイボウズの金額（税抜・税込）と違えば橙色。注文書でPDFが無ければ DB30 のPO欄のファイル名から */
+   仕入販売管理の金額（税抜・税込）と違えば橙色。注文書でPDFが無ければ DB30 のPO欄のファイル名から */
 function amountCell(c, t) {
   const num = s => +String(s || '').replace(/[^\d]/g, '');
   const db30 = num(c.row[CONFIG.db30.amount]), tax = num(c.row[CONFIG.db30.amountTax]);
@@ -1451,7 +1451,7 @@ function amountCell(c, t) {
   const ok = !db30 || a.some(x => x === db30 || x === tax);
   const ack = !ok && amountAck(c.d, t, name);
   const more = c.docs[t].length > 1 ? `<div class="small muted">${c.docs[t].length}件</div>` : '';
-  const tip = `${src}：${name}${ok ? '' : `\nサイボウズ ${fmtYen(db30)}（税込 ${fmtYen(tax)}）と違います`}${ack ? `\n✓ 確認済み（${ack.user || ''} ${ack.logged_at || ''}）：${ack.note}\nクリックで取り消し` : ok ? '' : '\nクリックで「確認してOK」にできます（理由を記録）'}`;
+  const tip = `${src}：${name}${ok ? '' : `\n仕入販売管理 ${fmtYen(db30)}（税込 ${fmtYen(tax)}）と違います`}${ack ? `\n✓ 確認済み（${ack.user || ''} ${ack.logged_at || ''}）：${ack.note}\nクリックで取り消し` : ok ? '' : '\nクリックで「確認してOK」にできます（理由を記録）'}`;
   return `<td class="num${ok ? '' : ack ? ' amtAck amtCell' : ' amtNg amtCell'}" data-t="${t}" data-name="${esc(name)}" title="${esc(tip)}">${a.map(fmtYen).join('<br>')}${src !== 'ファイル' ? '<div class="small muted">PO欄</div>' : ''}${ack ? `<div class="small" style="color:var(--st-done)">✓確認済</div>` : ''}${more}</td>`;
 }
 /* 金額違いを担当者が確認してOKにしたか（同じファイルに対してだけ有効） */
