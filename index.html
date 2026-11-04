@@ -110,6 +110,10 @@ a.pickFile{color:#b35900;text-decoration:underline dotted}
 tr.hasSel>td{background:#fffbe0}
 td.doc.picked{box-shadow:inset 0 0 0 2px #e0a800}
 td.doc .pickTag{font-size:10px;color:#9a6a00;font-weight:700}
+.custWrap{position:relative}
+#custSug{position:absolute;left:36px;top:100%;z-index:20;min-width:320px;max-height:320px;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 18px #0002;font-weight:normal}
+#custSug .opt{display:flex;justify-content:space-between;gap:12px;padding:4px 10px;cursor:pointer;white-space:nowrap}
+#custSug .opt.on,#custSug .opt:hover{background:#eef4ff}
 .refreshBox{display:flex;gap:6px;align-items:center;color:#8a7a3a;margin-left:auto}
 .actionbar .msgRow{flex-basis:100%;display:flex;gap:10px;align-items:center}
 .actionbar .msgRow:not(:has(span:not(:empty))){display:none}  /* メッセージが無いときは2段目を出さない */
@@ -214,8 +218,7 @@ details summary{cursor:pointer}
     <label>担当者 <select id="flUser"></select></label>
     <label>書類 <select id="flType"><option value="">すべて</option><option>見積書</option><option>注文書</option><option>納品書</option><option>請求書</option></select></label>
     <label>状態 <select id="flStatus"></select></label>
-    <label>顧客 <input type="text" id="flCust" list="custList" size="26" placeholder="入力すると候補を表示（部分一致）" autocomplete="off"></label>
-    <datalist id="custList"></datalist>
+    <label class="custWrap">顧客 <input type="text" id="flCust" size="26" placeholder="入力すると候補を表示（あいまい検索）" autocomplete="off"><div id="custSug" hidden></div></label>
     <button class="small" id="btnCustClear" title="顧客の条件を消す">×</button>
     <label>D番号/見積No <input type="text" id="flNo" size="10"></label>
     <label><input type="checkbox" id="flHasDoc" checked> 書類があるD番号のみ</label>
@@ -880,17 +883,39 @@ function renderFilters() {
   // 顧客：案件数の多い順（件数つき）
   const cc = {}; for (const c of S.cases.values()) { const n = c.row[CONFIG.db30.customer]; if (n) cc[n] = (cc[n] || 0) + 1; }
   const names = Object.keys(cc).sort((a, b) => cc[b] - cc[a] || a.localeCompare(b, 'ja'));
-  S.custNames = new Set(names);
-  $('#custList').innerHTML = names.map(n => `<option value="${esc(n)}">${cc[n]}件</option>`).join('');
+  S.custNames = new Set(names); S.custCount = cc;
   keep('#flStatus', STATUS_ORDER.concat(['POリンクなし', CY_STALE, '不要', 'なし']));
 }
+/* 顧客名のあいまい一致。株式会社・空白・記号を除き、全角半角・カタカナひらがな・大文字小文字をそろえてから比べる。
+   含んでいれば 1（先頭一致は 1.1）、含まなければ入力の2文字ずつの組がいくつ名前に出てくるか（例：カタカナで「ミツワ」→ 漢字まじりの「三ツワ…」は「ツワ」が一致で 0.5） */
+const CUST_MIN = 0.5;
+const custNorm = s => nfkc(s || '').toLowerCase().replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|inc\.?|co\.?,?\s*ltd\.?|corporation|[\s・･.,、。()（）\-－_]/g, '')
+  .replace(/[ァ-ヶ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+function custScore(q, name) {
+  const a = custNorm(q), b = custNorm(name); if (!a || !b) return 0;
+  if (b.includes(a)) return b.startsWith(a) ? 1.1 : 1;
+  if (a.length < 2) return 0;
+  const grams = [...new Set([...Array(a.length - 1)].map((_, i) => a.slice(i, i + 2)))];
+  return grams.filter(g => b.includes(g)).length / grams.length;
+}
+/* 顧客の候補リスト（入力のたびに、あいまい一致の高い順・案件数の多い順に最大15件） */
+function showCustSug() {
+  const q = $('#flCust').value.trim(), box = $('#custSug');
+  const names = [...(S.custNames || [])], cc = S.custCount || {};
+  const hits = (q ? names.map(n => [n, custScore(q, n)]).filter(([, s]) => s >= CUST_MIN) : names.map(n => [n, 0]))
+    .sort((x, y) => y[1] - x[1] || cc[y[0]] - cc[x[0]]).slice(0, 15);
+  if (!hits.length || S.custNames?.has(q)) { box.hidden = true; return; }
+  box.innerHTML = hits.map(([n], i) => `<div class="opt${i === 0 ? ' on' : ''}" data-v="${esc(n)}">${esc(n)}<span class="small muted">${cc[n]}件</span></div>`).join('');
+  box.hidden = false;
+}
+function pickCust(v) { $('#flCust').value = v; $('#custSug').hidden = true; render(); }
 function caseMatches(c) {
   const C = CONFIG.db30, r = c.row;
   if ($('#flYear').value && String(c.year) !== $('#flYear').value) return false;
   if ($('#flUser').value && r[C.user] !== $('#flUser').value) return false;
-  // 顧客：候補から選んだ（名前が完全一致）ならその顧客だけ、途中まで入力なら得意先名・エンドユーザの部分一致（大文字小文字は区別しない）
+  // 顧客：候補から選んだ（名前が完全一致）ならその顧客だけ、途中まで入力なら得意先名・エンドユーザのあいまい一致（custScore）
   const cu = $('#flCust').value.trim();
-  if (cu && (S.custNames?.has(cu) ? r[C.customer] !== cu : !(r[C.customer] + ' ' + r[C.endUser]).toLowerCase().includes(cu.toLowerCase()))) return false;
+  if (cu && (S.custNames?.has(cu) ? r[C.customer] !== cu : Math.max(custScore(cu, r[C.customer]), custScore(cu, r[C.endUser])) < CUST_MIN)) return false;
   const no = $('#flNo').value.trim().toUpperCase(); if (no && !c.d.includes(no) && !(r[C.quote] || '').toUpperCase().includes(no)) return false;
   const types = $('#flType').value ? [$('#flType').value] : DOC_TYPES;
   if ($('#flHasDoc').checked && !types.some(t => c.docs[t].length || cellStatus(c, t) !== 'なし')) return false;
@@ -1041,8 +1066,21 @@ function renderSelPop() {
 
 /* ---------- イベント ---------- */
 ['#flYear', '#flUser', '#flType', '#flStatus', '#flHasDoc'].forEach(s => $(s).onchange = () => { S.filterStatus = ''; render(); });
-['#flCust', '#flNo'].forEach(s => $(s).oninput = render);
-$('#btnCustClear').onclick = () => { $('#flCust').value = ''; render(); $('#flCust').focus(); };
+$('#flNo').oninput = render;
+$('#flCust').oninput = () => { showCustSug(); render(); };
+$('#flCust').onfocus = showCustSug;
+$('#flCust').onblur = () => setTimeout(() => { $('#custSug').hidden = true; }, 150);
+$('#flCust').onkeydown = e => {  // ↑↓で候補を移動、Enterで決定、Escで閉じる
+  const box = $('#custSug'), opts = [...box.querySelectorAll('.opt')]; if (box.hidden || !opts.length) return;
+  const i = opts.findIndex(o => o.classList.contains('on'));
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); const j = (i + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length;
+    opts.forEach((o, k) => o.classList.toggle('on', k === j)); opts[j].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') { e.preventDefault(); pickCust(opts[Math.max(i, 0)].dataset.v); }
+  else if (e.key === 'Escape') box.hidden = true;
+};
+$('#custSug').onmousedown = e => { const o = e.target.closest('.opt'); if (o) { e.preventDefault(); pickCust(o.dataset.v); } };
+$('#btnCustClear').onclick = () => { $('#flCust').value = ''; render(); $('#flCust').focus(); showCustSug(); };
 $('#btnReset').onclick = () => { ['#flYear', '#flUser', '#flType', '#flStatus', '#flCust', '#flNo'].forEach(s => $(s).value = ''); S.filterStatus = ''; render(); };
 $('#chips').onclick = e => {
   const ch = e.target.closest('.chip'); if (!ch) return;
