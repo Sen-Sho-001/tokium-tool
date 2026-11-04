@@ -655,10 +655,22 @@ const normStatus = s => /クローズ.*不要/.test(s) ? '不要' : /クロー�
 /* =====================================================================
    突き合わせ
    ===================================================================== */
+/* ファイル名の中のPO番号（例：PO#53R17-2600117 → 53R17-2600117、2007288236、T2610462）。
+   「PO#」の後ろ、または英字・数字・ハイフンが混ざった6文字以上・数字だけなら10桁以上（金額と区別するため）の区切り */
+function poNoKeys(name) {
+  const toks = nfkc(name || '').replace(/\.[^.]+$/, '').split('_').slice(1).map(s => s.trim());
+  const keys = new Set();
+  for (const t of toks) {
+    const m = t.match(/^PO#\s*(.+)$/i), v = (m ? m[1] : t).replace(/\s+/g, '').toUpperCase();
+    // PO#なしは「英字・数字・ハイフンを全部含む6文字以上」（53R17-2600117）か「数字10桁以上」（2007288236）。20-00-00 のような仕様の数字は除く
+    if (m ? v.length >= 4 : /^(?=.*\d)(?=.*[A-Z])(?=.*-)[A-Z0-9-]{6,}$|^\d{10,}$/.test(v)) keys.add(v);
+  }
+  return [...keys];
+}
 function rebuild() {
   const C = CONFIG.db30, minY = Math.min(...CONFIG.targetYears), maxY = Math.max(...CONFIG.targetYears);
   S.cases.clear(); S.quoteIndex.clear();
-  const poLinkToD = new Map(), poNameToD = new Map();
+  const poLinkToD = new Map(), poNameToD = new Map(), poKeyToD = new Map();
   for (const r of S.db30Rows) {
     const d = (r[C.d] || '').toUpperCase(); if (!/^D\d+$/.test(d)) continue;
     const y = +(r[C.deliveryDate] || r[C.salesDate] || '').slice(0, 4);
@@ -679,8 +691,20 @@ function rebuild() {
     // SharePointリンクのときもファイル名で引けるようにしておく（ファイルを上書き・差し替えるとリンクが切れ、リンクからは見つからないため）
     const nm = normName(po.split(',').slice(1).join(','));
     if (nm && /^https?:/.test(po)) (poNameToD.get(nm) || poNameToD.set(nm, []).get(nm)).push(d);
+    // ファイル名が後から変わっても見つけられるよう、PO番号でも引けるようにする（同じ顧客フォルダのファイルに限る）
+    if (/^https?:/.test(po)) for (const k of poNoKeys(po.split(',').slice(1).join(','))) (poKeyToD.get(k) || poKeyToD.set(k, []).get(k)).push(d);
     if (!CONFIG.tokiumLinkRe.test(po) && /^https?:/.test(po)) (poLinkToD.get(po) || poLinkToD.set(po, []).get(po)).push(d);  // 1つのPOが複数案件にまたがることがある
   }
+  // PO番号で紐づける：同じ顧客の案件で、その番号を持つPOが1つだけ（複数案件が同じPOファイルを指すのは可）のときだけ。
+  // 品名の型番など、いくつものPOに出てくる番号では紐づけない
+  const poKeyMatch = f => {
+    for (const k of poNoKeys(f.name)) {
+      const ds = (poKeyToD.get(k) || []).filter(d => folderMatchesCustomer(f.customer, S.cases.get(d).row[C.customer]));
+      const names = new Set(ds.map(d => normName((S.cases.get(d).row[C.po] || '').split(',').slice(1).join(','))));
+      if (ds.length && names.size === 1) return [...new Set(ds)];
+    }
+    return [];
+  };
   // 共有リンク(→ファイルID) 経由で顧客POを特定
   const poIdToD = new Map();
   for (const [url, ds] of poLinkToD) { const id = S.shareMap[url]; if (id) poIdToD.set(id, [...new Set([...(poIdToD.get(id) || []), ...ds])]); }
@@ -743,6 +767,7 @@ function rebuild() {
     } else if (g.type === '注文書') {
       if (poIdToD.has(doc.id)) { doc.dList = poIdToD.get(doc.id); doc.method = 'link'; }
       else if (poNameToD.has(normName(doc.name))) { doc.dList = poNameToD.get(normName(doc.name)); doc.method = 'db30name'; }
+      else if (f.sub && (doc.dList = poKeyMatch(f)).length) doc.method = 'po_no';
       else if (latestD.has(doc.id)) { const lr = latestD.get(doc.id); doc.dList = lr.d_number.toUpperCase().match(/D\d{4}/g) || []; doc.method = lr.match_method || 'candidate'; doc.quote = lr.quote_no || ''; }
       else doc.reason = '顧客PO：案件未特定（要Claude読み取り／候補から選択）';
     } else {
@@ -1229,6 +1254,8 @@ function openDrawer(c) {
     return `<span class="mk ${kind[0]}">${kind[1]}</span>${kind[2] ? ` <a href="${esc(u)}" target="_blank" rel="noopener">${kind[2]}</a>` : ''}${kindNote}`
       + `${nm || !kind[2] ? `<div class="small muted">${esc(nm || raw)}</div>` : ''}`;
   };
+  // 紐づいたSharePointのファイルを開くリンク（DB30のリンクがTOKIUMに変わっていても、元のPDFを開けるように）
+  const spOpen = docs => docs.filter(d => d.webUrl).map(d => `<div class="small"><span class="mk s-sp">SharePoint</span> <a href="${esc(d.webUrl)}" target="_blank" rel="noopener">ファイルを開く</a> <span class="muted">${esc(d.name)}${d.method === 'po_no' ? '（PO番号で一致）' : ''}</span></div>`).join('');
   // TOKIUMの登録（国税関係書類詳細CSV）：4種類のリンク
   const tk = Object.fromEntries(DOC_TYPES.map(t => [t, tkList(c.d, t)]));
   const tkRows = !S.tokium ? '<div class="small muted">TOKIUMのCSVが未読込です（上の「TOKIUMの登録済み一覧」から読み込むと表示されます）</div>'
@@ -1241,7 +1268,7 @@ function openDrawer(c) {
     <dt>得意先／担当</dt><dd>${esc(r[C.customer])}　${esc(r[C.contact])}${r[C.endUser] ? `（EU：${esc(r[C.endUser])}）` : ''}</dd>
     <dt>金額</dt><dd>${fmtYen(r[C.amount])}円（税込 ${fmtYen(r[C.amountTax])}円）</dd>
     <dt>納品日／検収日</dt><dd>${esc(r[C.deliveryDate])}／${esc(r[C.salesDate])}</dd><dt>登録者</dt><dd>${esc(r[C.user])}</dd>
-    <dt>DB30 PO欄</dt><dd>${db30Link(r[C.po], /^注文書/, '注文書')}</dd>
+    <dt>DB30 PO欄</dt><dd>${db30Link(r[C.po], /^注文書/, '注文書')}${spOpen(c.docs['注文書'])}</dd>
     <dt>DB30 納品書・請求書欄</dt><dd>${db30Link(r[C.invoiceLink], /^請求書/, '請求書')}</dd>
     ${(l => l ? `<dt>DB24 見積書View欄</dt><dd>${db30Link(l.raw, /^見積書/, '見積書')}<div class="small muted">${esc(l.q)}</div></dd>` : '')(cyLink(c, '見積書'))}
   </dl>
