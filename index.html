@@ -714,7 +714,9 @@ function rebuild() {
     if (f.year && !CONFIG.targetYears.includes(f.year)) { S.excluded.push({ ...f, reason: '対象年外' }); continue; }
     if (!f.customer) { S.excluded.push({ ...f, reason: '顧客フォルダの外' }); continue; }
     let type = '注文書', rule = null;
-    if (f.kind === 'po' && f.year && !CONFIG.receivedPoSubRe.test(f.sub)) { S.excluded.push({ ...f, reason: f.sub ? `相手方受領の注文書以外（${f.sub}）` : '顧客フォルダ直下' }); continue; }
+    // 相手方受領は「注文書」フォルダだけ読む。ただしDB30のPO欄（リンク・ファイル名）が指しているファイルは、顧客フォルダ直下などにあっても読む
+    const poPointed = poIdToD.has(f.id) || poNameToD.has(normName(f.name));
+    if (f.kind === 'po' && f.year && !CONFIG.receivedPoSubRe.test(f.sub) && !poPointed) { S.excluded.push({ ...f, reason: f.sub ? `相手方受領の注文書以外（${f.sub}）` : '顧客フォルダ直下' }); continue; }
     if (f.kind === 'own') {
       rule = CONFIG.folderRules.find(x => x.re.test(f.sub));
       if (!f.sub || !rule) { S.excluded.push({ ...f, reason: f.sub ? `対象外フォルダ（${f.sub}）` : '顧客フォルダ直下' }); continue; }
@@ -1442,7 +1444,8 @@ function amountCell(c, t) {
   const db30 = num(c.row[CONFIG.db30.amount]), tax = num(c.row[CONFIG.db30.amountTax]);
   const docs = [...c.docs[t]].sort(newestFirst);  // いちばん新しいファイル（同じ見積Noなら枝番、それ以外は日付）
   let name = docs[0]?.name || '', src = 'ファイル';
-  if (!name && t === '注文書') { name = (c.row[CONFIG.db30.po] || '').split(',').slice(1).join(','); src = 'DB30のPO欄'; }
+  // 注文書でPDFが無い、またはPDFの名前に金額が無い（複数案件をまとめた1つのPDFなど）ときは、DB30のPO欄のファイル名から
+  if (t === '注文書' && !nameAmounts(name).length) { const n2 = (c.row[CONFIG.db30.po] || '').split(',').slice(1).join(','); if (n2 || !name) { name = n2; src = 'DB30のPO欄'; } }
   const a = nameAmounts(name);
   if (!a.length) return `<td class="num muted small" title="${esc(name ? `${src}：${name}（ファイル名に金額なし）` : 'ファイルなし')}">—</td>`;
   const ok = !db30 || a.some(x => x === db30 || x === tax);
