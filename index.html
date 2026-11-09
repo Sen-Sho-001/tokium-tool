@@ -103,6 +103,7 @@ td.doc .sub{font-size:10px;color:var(--sub);line-height:1.2}
 .pickbox label{white-space:nowrap}
 .cellPick{display:inline-flex;align-items:center;gap:2px;font-size:10px;color:var(--sub);margin-top:2px;cursor:pointer;padding:0 4px;border-radius:3px}
 .cellPick:hover{background:#fff3c4}
+.cyPick{color:#6b3fa0}
 .cellPick input{margin:0;width:13px;height:13px;cursor:pointer}
 #selPop{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);width:min(760px,96vw);max-height:55vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0003;padding:10px 12px;z-index:9}
 #selPop table td,#selPop table th{font-size:12px}
@@ -228,9 +229,11 @@ details summary{cursor:pointer}
   </div>
   <div class="row cyAuto" id="cyListBar" style="margin-top:6px;padding:6px 8px;background:#f6f0ff;border:1px solid #ddccf7;border-radius:6px">
     <b class="small">サイボウズのリンクをTOKIUMに書き換え（管理者PC）</b>
-    <span class="small">表示中の案件の <b id="cyListType"></b> のうち、自動で書き込める <b id="cyListCnt">0</b>件</span>
-    <label class="small">最大<input type="number" id="cyListMax" value="5" min="1" max="500" style="width:52px">件</label>
-    <button class="small primary" id="btnCyListWrite" title="いま案件一覧に表示している案件が対象です。上の「書類」で見積書／注文書に絞れます">書き込む</button>
+    <span class="small">チェック <b id="cyListSel">0</b>件（表示中の <b id="cyListType"></b> で書き込めるもの <b id="cyListCnt">0</b>件）</span>
+    <label class="small">上から<input type="number" id="cyListMax" value="5" min="1" max="500" style="width:48px">件</label>
+    <button class="small" id="btnCyListPick" title="表示中の書き込める書類を、一覧の上から指定の件数だけチェックします">まとめて選ぶ</button>
+    <button class="small" id="btnCyListClear">チェックを外す</button>
+    <button class="small primary" id="btnCyListWrite" title="一覧の「サイボウズ」にチェックした書類のうち、いま表示しているものを書き換えます">チェックした書類を書き込む</button>
     <button class="small" id="btnCyListDry" title="レコードを探して書き換え直前まで確認します（保存しません）">確認のみ（保存しない）</button>
     <span class="small" id="cyListMsg"></span>
   </div>
@@ -448,7 +451,7 @@ const selectable = d => SELECTABLE.has(d.status) && !d.reverseRef && !isAltVersi
 
 /* ===================================================================== */
 const S = {
-  cySel: new Set(), cyResults: null, cyRows: [],  // 「サイボウズ更新」タブ：自動で書き込む注文書の選択と結果
+  cySel: new Set(), cyListSel: new Set(), cyResults: null, cyRows: [],  // 「サイボウズ更新」タブ：自動で書き込む注文書の選択と結果
   db30Rows: [], db30Name: '',
   rawFiles: new Map(),       // id → {file, rel}
   shareMap: {},              // 共有URL → ファイルID
@@ -622,7 +625,8 @@ function cyListRows() {
 function renderCyBar() {
   const ft = $('#flType').value;
   $('#cyListType').textContent = ft === '見積書' || ft === '注文書' ? ft : '見積書・注文書';
-  $('#cyListCnt').textContent = cyListRows().length;
+  const rows = cyListRows(); $('#cyListCnt').textContent = rows.length;
+  $('#cyListSel').textContent = rows.filter(x => S.cyListSel.has(cyDoneKey(x.s))).length;
 }
 async function cyWrite(dry, rows = (S.cyRows || []).filter(x => S.cySel.has(cyDoneKey(x.s))), msgId = '#cyWriteMsg') {
   const msg = t => { $(msgId).textContent = t; };
@@ -652,14 +656,20 @@ async function cyWrite(dry, rows = (S.cyRows || []).filter(x => S.cySel.has(cyDo
       const { headers, data } = toObjects(parseCSV(decodeCSV(await res.arrayBuffer())));
       S.db30Ver = `${name}|local ${res.headers.get('X-File-Mtime')}`; setDb30(headers, data, `このPC ${name}（書き換え後）`);
       const r24 = await fetch(L + '/db24'); if (r24.ok) setDb24(toObjects(parseCSV(decodeCSV(await r24.arrayBuffer()))).data, 'このPC db24（書き換え後）', `local ${r24.headers.get('X-File-Mtime')}`);
-      S.cySel.clear(); rebuild();
+      S.cySel.clear(); S.cyListSel.clear(); rebuild();
     }
     render();
   } catch (e) { msg('✗ ' + e.message); }
   finally { CY_BTNS.forEach(b => { $(b).disabled = false; }); }
 }
 const CY_BTNS = ['#btnCyWrite', '#btnCyDry', '#btnCyListWrite', '#btnCyListDry'];
-const cyListRun = dry => cyWrite(dry, cyListRows().slice(0, Math.max(1, +$('#cyListMax').value || 1)), '#cyListMsg');
+const cyListRun = dry => {
+  const rows = cyListRows().filter(x => S.cyListSel.has(cyDoneKey(x.s)));
+  if (!rows.length) { $('#cyListMsg').textContent = '一覧の書類の欄にある「サイボウズ」にチェックを入れてください'; return; }
+  return cyWrite(dry, rows, '#cyListMsg');
+};
+$('#btnCyListPick').onclick = () => { for (const x of cyListRows().slice(0, Math.max(1, +$('#cyListMax').value || 1))) S.cyListSel.add(cyDoneKey(x.s)); render(); };
+$('#btnCyListClear').onclick = () => { S.cyListSel.clear(); render(); };
 $('#btnCyListWrite').onclick = () => cyListRun(false);
 $('#btnCyListDry').onclick = () => cyListRun(true);
 $('#btnCyWrite').onclick = () => cyWrite(false);
@@ -1131,8 +1141,10 @@ function docCell(c, t) {
   const picked = ds.some(d => S.selected.has(d.key));
   const selDocs = ds.filter(selectable);  // Claudeに登録させられる書類（未登録など）
   const pk = pickDocs(c, t);  // 欄の「登録する」は、ファイルが複数なら日付がいちばん新しいものだけを選ぶ
+  const cyS = (t === '見積書' || t === '注文書') && (!$('#flType').value || $('#flType').value === t) && !cyDoneSet().has(cyDoneKey(cyStale(c, t) || {})) ? cyStale(c, t) : null;
+  const cyPick = cyS && !cyNoAuto(c, t, cyS) ? `<div><label class="cellPick cyPick" title="サイボウズのリンクをTOKIUMのURLに書き換える対象に入れる（上の紫の帯から実行）"><input type="checkbox" class="cyCell" data-k="${esc(cyDoneKey(cyS))}" ${S.cyListSel.has(cyDoneKey(cyS)) ? 'checked' : ''}>サイボウズ</label></div>` : '';
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="${pk.length < selDocs.length ? `ファイルが${selDocs.length}件あるので、日付がいちばん新しい「${esc(pk[0].name)}」を登録対象に入れます（ほかを選ぶときは詳細から）` : 'この書類をClaudeへの登録対象に入れる'}"><input type="checkbox" class="selCell" data-t="${t}" ${pk.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${amNote}${cyNote}${cellPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${amNote}${cyNote}${cellPick}${cyPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -1275,6 +1287,7 @@ $('#tblCases').onclick = e => {
   if (e.target.classList.contains('selCase')) { for (const d of docsOfCase(c, DOC_TYPES)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
   // セル内の「登録する」チェック：その書類だけを選ぶ／外す（詳細画面は開かない）
   if (e.target.classList.contains('selCell')) { for (const d of pickDocs(c, e.target.dataset.t)) e.target.checked ? S.selected.add(d.key) : S.selected.delete(d.key); render(); return; }
+  if (e.target.classList.contains('cyCell')) { e.target.checked ? S.cyListSel.add(e.target.dataset.k) : S.cyListSel.delete(e.target.dataset.k); renderCyBar(); return; }
   if (e.target.closest('.cellPick')) return;  // ラベル部分のクリック（チェックの切替はinput側で処理）
   if (e.target.closest('.pickFile')) { e.preventDefault(); openFilePicker(c, e.target.closest('.pickFile').dataset.t); return; }
   const amt = e.target.closest('td.amtCell');
