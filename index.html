@@ -566,7 +566,18 @@ function cyNoAuto(c, t, s) {
   if (s.state !== 'SharePointのまま') return `リンク欄が${s.state}のため手作業`;
   if (s.tk.length !== 1) return `TOKIUMに${s.tk.length}件あるため手作業`;
   const ds = t === '見積書' ? S.quoteIndex.get(s.q) || [] : [];
-  return ds.length > 1 ? `この見積は${ds.length}案件で共用のため手作業` : '';
+  if (ds.length > 1) return `この見積は${ds.length}案件で共用のため手作業`;
+  return t === '見積書' ? cyBranchIssue(c, s) : '';
+}
+/* 見積書：TOKIUMに登録した版とView欄の版（枝番）が違う・分からないときの理由。処理ログがあればログのファイルで比べる（TOKIUMの一覧には枝番がほぼ無い） */
+function cyBranchIssue(c, s) {
+  if (!S.rawFiles.size) return '書類一覧が未読込のため版を確認できません';
+  const vb = quoteBranch(s.raw.split(',').slice(1).join(','));
+  if (!vb) return 'View欄の名前から版を確認できないため手作業';
+  const docs = c.docs['見積書'], logged = docs.filter(d => DONE.includes(d.status) && d.logRow?.status && !d.tkOverride);
+  if (logged.length) return logged.some(d => quoteBranch(d.name)?.b === vb.b) ? '' : '登録した版とView欄の版が違うため手作業';
+  if (vb.b > 0) return '改訂版のうちどれを登録したか不明なため手作業';
+  return docs.some(d => (quoteBranch(d.name)?.b || 0) > 0) ? 'フォルダに改訂版があり、登録した版が不明なため手作業' : '';
 }
 function cyDoneSet() { try { return new Set(JSON.parse(lsGet('tokium_cy_done') || '[]')); } catch { return new Set(); } }
 function renderCy() {
