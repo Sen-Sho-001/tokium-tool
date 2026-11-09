@@ -90,6 +90,8 @@ td.amtCell{cursor:pointer}
 td.amtAck{color:#6b7280}
 .cyStale{display:inline-block;margin-top:2px;padding:0 5px;border-radius:3px;background:#efe6ff;color:#5b2ea6;font-size:11px;font-weight:600;white-space:nowrap}
 .cyBox{margin-top:6px;padding:6px 8px;background:#f6f0ff;border:1px solid #ddccf7;border-radius:6px}
+#tblCy tr.cyDone td{opacity:.45}
+#tblCy tr.cyOpened td{background:#f3fbf3}
 .cyBox code{font-size:11px;word-break:break-all;background:#fff;padding:1px 4px;border-radius:3px}
 td.doc .sub.ok{color:var(--st-done)}
 .mk.s-不要{background:#eef0f3;color:#8a8f96;font-weight:400}
@@ -232,6 +234,7 @@ details summary{cursor:pointer}
   <div class="tab" data-tab="excluded">対象外<span class="cnt" id="cntEx">0</span></div>
   <div class="tab" data-tab="import">結果の取り込み</div>
   <div class="tab" data-tab="log">処理ログ<span class="cnt" id="cntLog">0</span></div>
+  <div class="tab" data-tab="cyupd">サイボウズ更新<span class="cnt" id="cntCy">0</span></div>
   <div class="tab" data-tab="rules">取引先ルール<span class="cnt" id="cntRules">0</span></div>
 </div>
 
@@ -266,6 +269,21 @@ details summary{cursor:pointer}
   <textarea id="taImport" rows="8" placeholder="RESULT,納品書,D1234,,20260911_〇〇….pdf,〇〇株式会社,2026/09/11,720000,登録済,"></textarea>
   <div class="row" style="margin-top:6px"><button id="btnParse">プレビュー</button><button class="primary" id="btnApply" disabled>処理ログに反映</button><span id="impMsg" class="small"></span></div>
   <div id="impPreview" style="margin-top:8px"></div>
+</section>
+
+<section id="pane-cyupd" class="hidden panel">
+  <div class="small muted" style="margin-bottom:6px">TOKIUMに登録済みなのに、サイボウズのリンク（注文書＝仕入販売管理のPO欄、見積書＝見積管理のView欄）がまだTOKIUMのURLになっていない書類です。
+    「コピーして開く」で書き換え後の値をコピーし、サイボウズの検索結果を新しいタブで開きます。レコードを編集して欄に貼り付け、保存してください。
+    サイボウズを直したあと「↻ サイボウズ」を押すと、この一覧から消えます。</div>
+  <div class="row" style="margin-bottom:6px"><label class="small">書類 <select id="cyType"><option value="">すべて</option><option>注文書</option><option>見積書</option></select></label>
+    <label class="small"><input type="checkbox" id="cyHideDone" checked> 対応済みにしたものを隠す</label><span class="small muted" id="cyMsg"></span></div>
+  <div class="row cyAuto" style="margin-bottom:6px;padding:6px 8px;background:#f6f0ff;border:1px solid #ddccf7;border-radius:6px">
+    <b class="small">自動で書き込む（管理者PC）</b>
+    <button class="small primary" id="btnCyWrite" title="チェックした書類のサイボウズのリンク欄（注文書＝仕入販売管理のPO欄、見積書＝見積管理のView欄）を、TOKIUMのURLに書き換えます。元の値と一致するレコードだけを書き換え、終わったらDB30・DB24を取り直します">選んだ書類をサイボウズに書き込む</button>
+    <button class="small" id="btnCyDry" title="レコードを探して書き換え直前まで確認します（保存しません）">確認のみ（保存しない）</button>
+    <span class="small" id="cyWriteMsg"></span>
+  </div>
+  <table id="tblCy"><thead><tr><th><input type="checkbox" id="cySelAll" title="表示中の、自動で書き込める書類をすべて選ぶ"></th><th>D番号</th><th>書類</th><th>得意先</th><th>今の値</th><th>書き換え後の値</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section id="pane-rules" class="hidden panel">
@@ -422,6 +440,7 @@ const selectable = d => SELECTABLE.has(d.status) && !d.reverseRef && !isAltVersi
 
 /* ===================================================================== */
 const S = {
+  cySel: new Set(), cyResults: null, cyRows: [],  // 「サイボウズ更新」タブ：自動で書き込む注文書の選択と結果
   db30Rows: [], db30Name: '',
   rawFiles: new Map(),       // id → {file, rel}
   shareMap: {},              // 共有URL → ファイルID
@@ -535,6 +554,102 @@ function cyStale(c, t) {
   return { ...l, tk, state: !l.raw ? '空欄' : /^https?:/.test(l.raw) ? 'SharePointのまま' : 'URL以外' };
 }
 const CY_STALE = 'サイボウズ未更新';
+/* サイボウズのリンク欄に書く値：「TOKIUMのURL,ファイル名」（ファイル名は今の欄のものを引き継ぐ） */
+function cyValue(s) {
+  const nm = s.raw.split(',').slice(1).join(',').trim() || s.raw.split('/').pop().split('?')[0] || '';
+  return tkUrl(s.tk[0]) + (nm ? ',' + nm : '');
+}
+/* 「サイボウズ更新」タブ：書き換えが必要な書類の一覧。対応済みの印はこのブラウザだけに保存（サイボウズを直して読み直せば一覧から消える） */
+const cyDoneKey = s => `${s.q}|${s.where}`;
+/* 自動で書き込めない理由（書き込めるなら空）。TOKIUMの登録が複数・1つの見積を複数案件で共用（View欄にURLは1つしか書けない）は人が判断する */
+function cyNoAuto(c, t, s) {
+  if (s.state !== 'SharePointのまま') return `リンク欄が${s.state}のため手作業`;
+  if (s.tk.length !== 1) return `TOKIUMに${s.tk.length}件あるため手作業`;
+  const ds = t === '見積書' ? S.quoteIndex.get(s.q) || [] : [];
+  return ds.length > 1 ? `この見積は${ds.length}案件で共用のため手作業` : '';
+}
+function cyDoneSet() { try { return new Set(JSON.parse(lsGet('tokium_cy_done') || '[]')); } catch { return new Set(); } }
+function renderCy() {
+  const type = $('#cyType').value, hide = $('#cyHideDone').checked, done = cyDoneSet();
+  const items = [...S.cases.values()].sort((a, b) => b.d.localeCompare(a.d, 'ja', { numeric: true }))
+    .flatMap(c => ['注文書', '見積書'].filter(t => !type || t === type).map(t => ({ c, t, s: cyStale(c, t) }))).filter(x => x.s);
+  $('#cntCy').textContent = items.filter(x => !done.has(cyDoneKey(x.s))).length;
+  const rows = items.filter(x => !(hide && done.has(cyDoneKey(x.s))));
+  $('#tblCy tbody').innerHTML = rows.map(({ c, t, s }) => {
+    const val = cyValue(s), k = cyDoneKey(s), isDone = done.has(k);
+    const href = s.url ? s.url.replace('{q}', encodeURIComponent(s.q)) : '';
+    const res = S.cyResults?.[k];
+    return `<tr class="${isDone ? 'cyDone' : ''}" data-k="${esc(k)}"><td>${!cyNoAuto(c, t, s) ? `<input type="checkbox" class="cySel" data-k="${esc(k)}" ${S.cySel.has(k) ? 'checked' : ''}>` : ''}</td><td><a href="#" class="cyD" data-d="${esc(c.d)}">${esc(c.d)}</a>${t === '見積書' ? `<div class="small muted">${esc(s.q)}</div>` : ''}</td><td>${t}</td>
+      <td class="small">${esc(c.row[CONFIG.db30.customer])}</td>
+      <td class="small"><span class="mk s-sp">${esc(s.state)}</span><div class="muted" style="word-break:break-all">${esc((s.raw.split(',').slice(1).join(',') || s.raw).slice(0, 80))}</div></td>
+      <td class="small"><code style="word-break:break-all">${esc(val)}</code>${s.tk.length > 1 ? `<div style="color:#b35900">⚠ TOKIUMに${s.tk.length}件あります（1件目のURL）。詳細で確認してください</div>` : ''}</td>
+      <td style="white-space:nowrap"><button class="small primary cyGo" data-v="${esc(val)}" data-href="${esc(href)}" data-k="${esc(k)}">コピーして開く</button>
+        <button class="small cyCopy" data-v="${esc(val)}">コピー</button>
+        <label class="small"><input type="checkbox" class="cyChk" data-k="${esc(k)}" ${isDone ? 'checked' : ''}> 対応済み</label>
+        ${cyNoAuto(c, t, s) ? `<div class="small muted">${esc(cyNoAuto(c, t, s))}</div>` : ''}
+        ${res ? `<div class="small" style="color:${res.ok ? '#2e7d32' : '#b35900'}">${res.ok ? '✓' : '⚠'} ${esc(res.message)}</div>` : ''}</td></tr>`;
+  }).join('') || '<tr><td colspan="7" class="muted">書き換えが必要な書類はありません（TOKIUMの一覧・DB30・DB24を読み込むと表示されます）</td></tr>';
+  $('#cyMsg').textContent = rows.length ? `${rows.length}件` : '';
+  S.cyRows = rows;
+  for (const k of [...S.cySel]) if (!rows.some(x => cyDoneKey(x.s) === k)) S.cySel.delete(k);
+  $('#btnCyWrite').textContent = `選んだ書類をサイボウズに書き込む（${S.cySel.size}件）`;
+}
+/* 選んだ書類の書き換えを、管理者PCの常駐プログラムに頼む（auto\cybozu_link_update.py）。終わったらDB30・DB24を読み直す */
+async function cyWrite(dry) {
+  const msg = t => { $('#cyWriteMsg').textContent = t; };
+  const items = (S.cyRows || []).filter(x => S.cySel.has(cyDoneKey(x.s))).map(({ c, t, s }) => {
+    const [ou, ...on] = s.raw.split(','), [nu, ...nn] = cyValue(s).split(',');
+    return { d: c.d, did: t === '見積書' ? 24 : 30, q: s.q, key: cyDoneKey(s), old_url: ou.trim(), old_name: on.join(',').trim(), new_url: nu, new_name: nn.join(',') };
+  });
+  if (!items.length) { msg('書き込む書類にチェックを入れてください'); return; }
+  if (!dry && !confirm(`${items.length}件の書類について、サイボウズのリンク欄（注文書＝仕入販売管理のPO欄、見積書＝見積管理のView欄）をTOKIUMのURLに書き換えます。\n元の値と一致するレコードだけを書き換え、元の値は管理者PCの記録に残します。よろしいですか？`)) return;
+  const L = 'http://127.0.0.1:8767/cybozu';
+  try { if (!(await fetch(L + '/status', { signal: AbortSignal.timeout(2000) })).ok) throw 0; }
+  catch { msg('✗ 自動の書き込みは管理者PCでツールを開いたときだけ使えます'); return; }
+  $('#btnCyWrite').disabled = $('#btnCyDry').disabled = true;
+  try {
+    let st = await (await fetch(L + '/linkupdate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items, dry }) })).json();
+    if (st.state === 'busy') { msg('✗ ' + st.message); return; }
+    const t0 = Date.now();
+    while (st.state === 'running') {
+      await sleep(3000);
+      st = await (await fetch(L + '/linkstatus')).json();
+      msg(`⏳ ${st.message}（${Math.round((Date.now() - t0) / 1000)}秒）`);
+    }
+    S.cyResults = Object.fromEntries((st.results || []).map(r => [r.key, r]));
+    msg((st.state === 'done' ? '✓ ' : '✗ ') + st.message);
+    if (!dry && (st.results || []).some(r => r.state === 'done')) {  // 書き換え後のDB30・DB24を読み直す（常駐プログラムが取り直し済み）
+      const res = await fetch(L + '/db30'); const name = new TextDecoder().decode(new Uint8Array((res.headers.get('X-File-Name') || '').match(/../g).map(h => parseInt(h, 16))));
+      const { headers, data } = toObjects(parseCSV(decodeCSV(await res.arrayBuffer())));
+      S.db30Ver = `${name}|local ${res.headers.get('X-File-Mtime')}`; setDb30(headers, data, `このPC ${name}（書き換え後）`);
+      const r24 = await fetch(L + '/db24'); if (r24.ok) setDb24(toObjects(parseCSV(decodeCSV(await r24.arrayBuffer()))).data, 'このPC db24（書き換え後）', `local ${r24.headers.get('X-File-Mtime')}`);
+      S.cySel.clear(); rebuild();
+    }
+    renderCy();
+  } catch (e) { msg('✗ ' + e.message); }
+  finally { $('#btnCyWrite').disabled = $('#btnCyDry').disabled = false; }
+}
+$('#btnCyWrite').onclick = () => cyWrite(false);
+$('#btnCyDry').onclick = () => cyWrite(true);
+$('#cySelAll').onchange = e => { for (const x of S.cyRows || []) if (!cyNoAuto(x.c, x.t, x.s)) e.target.checked ? S.cySel.add(cyDoneKey(x.s)) : S.cySel.delete(cyDoneKey(x.s)); renderCy(); };
+$('#cyType').onchange = $('#cyHideDone').onchange = renderCy;
+$('#tblCy').onclick = async e => {
+  const a = e.target.closest('.cyD'); if (a) { e.preventDefault(); openDrawer(S.cases.get(a.dataset.d)); return; }
+  const g = e.target.closest('.cyGo');
+  if (g) {
+    const ok = await copyText(g.dataset.v);
+    if (g.dataset.href) window.open(g.dataset.href, '_blank', 'noopener');
+    $('#cyMsg').textContent = ok ? '✓ コピーしました。サイボウズで欄に貼り付けて保存してください' : 'コピーに失敗しました';
+    g.closest('tr').classList.add('cyOpened');
+  }
+};
+$('#tblCy').onchange = e => {
+  const sel = e.target.closest('.cySel');
+  if (sel) { sel.checked ? S.cySel.add(sel.dataset.k) : S.cySel.delete(sel.dataset.k); $('#btnCyWrite').textContent = `選んだ書類をサイボウズに書き込む（${S.cySel.size}件）`; return; }
+  const ch = e.target.closest('.cyChk'); if (!ch) return;
+  const done = cyDoneSet(); ch.checked ? done.add(ch.dataset.k) : done.delete(ch.dataset.k);
+  lsSet('tokium_cy_done', JSON.stringify([...done])); renderCy();
+};
 function setDb24(data, label, ver = '') {
   const byM = {};
   for (const r of data) { const m = quoteKey(r['新見積No.']); if (m && r['View']) byM[m] = r['View']; }
@@ -1021,7 +1136,7 @@ function renderRules() {
 }
 function render() {
   const C = CONFIG.db30;
-  renderRules();
+  renderRules(); renderCy();
   updateLoadSummary();
   // 集計（書類単位）
   const cnt = {}; for (const d of S.docs) if (d.dList.length && !isAltVersion(d)) cnt[d.status] = (cnt[d.status] || 0) + 1;
@@ -1117,7 +1232,7 @@ $('#chips').onclick = e => {
 $('#tabs').onclick = e => { const t = e.target.closest('.tab'); if (t) showTab(t.dataset.tab); };
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
-  ['list', 'unmatched', 'excluded', 'import', 'log', 'rules'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
+  ['list', 'unmatched', 'excluded', 'import', 'log', 'cyupd', 'rules'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
 }
 const docsOfCase = (c, types = $('#flType').value ? [$('#flType').value] : DOC_TYPES) => types.flatMap(t => pickDocs(c, t));
 $('#tblCases').onclick = e => {
@@ -1273,8 +1388,7 @@ function openDrawer(c) {
     ${(l => l ? `<dt>DB24 見積書View欄</dt><dd>${db30Link(l.raw, /^見積書/, '見積書')}<div class="small muted">${esc(l.q)}</div></dd>` : '')(cyLink(c, '見積書'))}
   </dl>
   ${['見積書', '注文書'].map(t => cyStale(c, t)).filter(Boolean).map(s => {
-    const nm = s.raw.split(',').slice(1).join(',').trim() || s.raw.split('/').pop().split('?')[0] || '';
-    const val = tkUrl(s.tk[0]) + (nm ? ',' + nm : '');
+    const val = cyValue(s);
     return `<div class="cyBox"><span class="cyStale">${CY_STALE}</span> <b>${esc(s.where)}</b> が${s.state}です（TOKIUMには登録済み）。
       <div class="small" style="margin-top:4px">書き換え後の値：<code>${esc(val)}</code> <button class="small cyCopy" data-v="${esc(val)}">コピー</button>
       ${s.url ? `<a class="btn small" href="${esc(s.url.replace('{q}', encodeURIComponent(s.q)))}" target="_blank" rel="noopener">サイボウズで ${esc(s.q)} を開く</a>` : ''}</div>
@@ -1300,7 +1414,7 @@ function docItem(d) {
       ${['登録済（Claude）', 'TOKIUM記録あり'].includes(d.status) ? '<button class="small primary doConfirm">確定済にする</button>' : ''}
       ${d.status === '別版' ? '<button class="small doMarkReg" title="TOKIUMに登録したのがこのファイルなら押す（ログに記録し、ほかのファイルを別版にする）">こちらが登録済み</button>' : ''}
       ${d.status === '要確認' && !d.reverseRef ? '<button class="small primary doClose" data-kind="登録済" title="TOKIUMに手で登録した・内容を直した など、登録は済んでいる">クローズ：登録済み</button><button class="small doClose" data-kind="登録不要" title="旧版・登録しない書類など">クローズ：登録不要</button>' : ''}
-      ${['登録済（Claude）', '要確認', '確定済', 'TOKIUM記録あり', '不要'].includes(d.status) && (d.status !== 'TOKIUM記録あり' && d.status !== '不要' || /クローズ/.test(d.logRow?.status || '')) ? '<button class="small doReset">未登録に戻す</button>' : ''}
+      ${['登録済（Claude）', '要確認', '確定済', 'TOKIUM記録あり', '不要'].includes(d.status) && (d.status !== 'TOKIUM記録あり' && d.status !== '不要' || /クローズ/.test(d.logRow?.status || '') || d.status === 'TOKIUM記録あり' && d.logRow?.status && !d.tkOverride) ? '<button class="small doReset">未登録に戻す</button>' : ''}
     </div>
     <div class="nm small">${esc(d.name)}</div>${d.tkOverride ? `
     <div class="small" style="color:var(--st-done,#2e7d32)">処理ログでは「${esc(d.tkOverride)}」でしたが、その後TOKIUMに登録があったため「TOKIUM記録あり」にしています</div>` : ''}
