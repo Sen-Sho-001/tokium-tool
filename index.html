@@ -226,6 +226,14 @@ details summary{cursor:pointer}
     <label><input type="checkbox" id="flHasDoc" checked> 書類があるD番号のみ</label>
     <button class="small" id="btnReset">条件クリア</button>
   </div>
+  <div class="row cyAuto" id="cyListBar" style="margin-top:6px;padding:6px 8px;background:#f6f0ff;border:1px solid #ddccf7;border-radius:6px">
+    <b class="small">サイボウズのリンクをTOKIUMに書き換え（管理者PC）</b>
+    <span class="small">表示中の案件の <b id="cyListType"></b> のうち、自動で書き込める <b id="cyListCnt">0</b>件</span>
+    <label class="small">最大<input type="number" id="cyListMax" value="5" min="1" max="500" style="width:52px">件</label>
+    <button class="small primary" id="btnCyListWrite" title="いま案件一覧に表示している案件が対象です。上の「書類」で見積書／注文書に絞れます">書き込む</button>
+    <button class="small" id="btnCyListDry" title="レコードを探して書き換え直前まで確認します（保存しません）">確認のみ（保存しない）</button>
+    <span class="small" id="cyListMsg"></span>
+  </div>
 </section>
 
 <div class="tabs" id="tabs">
@@ -606,9 +614,19 @@ function renderCy() {
   $('#btnCyWrite').textContent = `選んだ書類をサイボウズに書き込む（${S.cySel.size}件）`;
 }
 /* 選んだ書類の書き換えを、管理者PCの常駐プログラムに頼む（auto\cybozu_link_update.py）。終わったらDB30・DB24を読み直す */
-async function cyWrite(dry) {
-  const msg = t => { $('#cyWriteMsg').textContent = t; };
-  const items = (S.cyRows || []).filter(x => S.cySel.has(cyDoneKey(x.s))).map(({ c, t, s }) => {
+/* 案件一覧で表示中の案件のうち、自動で書き込める書類（上の「書類」の絞り込みに従う） */
+function cyListRows() {
+  const ft = $('#flType').value, types = ['見積書', '注文書'].filter(t => !ft || t === ft), done = cyDoneSet();
+  return visibleCases.flatMap(c => types.map(t => ({ c, t, s: cyStale(c, t) }))).filter(x => x.s && !cyNoAuto(x.c, x.t, x.s) && !done.has(cyDoneKey(x.s)));
+}
+function renderCyBar() {
+  const ft = $('#flType').value;
+  $('#cyListType').textContent = ft === '見積書' || ft === '注文書' ? ft : '見積書・注文書';
+  $('#cyListCnt').textContent = cyListRows().length;
+}
+async function cyWrite(dry, rows = (S.cyRows || []).filter(x => S.cySel.has(cyDoneKey(x.s))), msgId = '#cyWriteMsg') {
+  const msg = t => { $(msgId).textContent = t; };
+  const items = rows.map(({ c, t, s }) => {
     const [ou, ...on] = s.raw.split(','), [nu, ...nn] = cyValue(s).split(',');
     return { d: c.d, did: t === '見積書' ? 24 : 30, q: s.q, key: cyDoneKey(s), old_url: ou.trim(), old_name: on.join(',').trim(), new_url: nu, new_name: nn.join(',') };
   });
@@ -617,7 +635,7 @@ async function cyWrite(dry) {
   const L = 'http://127.0.0.1:8767/cybozu';
   try { if (!(await fetch(L + '/status', { signal: AbortSignal.timeout(2000) })).ok) throw 0; }
   catch { msg('✗ 自動の書き込みは管理者PCでツールを開いたときだけ使えます'); return; }
-  $('#btnCyWrite').disabled = $('#btnCyDry').disabled = true;
+  CY_BTNS.forEach(b => { $(b).disabled = true; });
   try {
     let st = await (await fetch(L + '/linkupdate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items, dry }) })).json();
     if (st.state === 'busy') { msg('✗ ' + st.message); return; }
@@ -636,10 +654,14 @@ async function cyWrite(dry) {
       const r24 = await fetch(L + '/db24'); if (r24.ok) setDb24(toObjects(parseCSV(decodeCSV(await r24.arrayBuffer()))).data, 'このPC db24（書き換え後）', `local ${r24.headers.get('X-File-Mtime')}`);
       S.cySel.clear(); rebuild();
     }
-    renderCy();
+    render();
   } catch (e) { msg('✗ ' + e.message); }
-  finally { $('#btnCyWrite').disabled = $('#btnCyDry').disabled = false; }
+  finally { CY_BTNS.forEach(b => { $(b).disabled = false; }); }
 }
+const CY_BTNS = ['#btnCyWrite', '#btnCyDry', '#btnCyListWrite', '#btnCyListDry'];
+const cyListRun = dry => cyWrite(dry, cyListRows().slice(0, Math.max(1, +$('#cyListMax').value || 1)), '#cyListMsg');
+$('#btnCyListWrite').onclick = () => cyListRun(false);
+$('#btnCyListDry').onclick = () => cyListRun(true);
 $('#btnCyWrite').onclick = () => cyWrite(false);
 $('#btnCyDry').onclick = () => cyWrite(true);
 $('#cySelAll').onchange = e => { for (const x of S.cyRows || []) if (!cyNoAuto(x.c, x.t, x.s)) e.target.checked ? S.cySel.add(cyDoneKey(x.s)) : S.cySel.delete(cyDoneKey(x.s)); renderCy(); };
@@ -1159,6 +1181,7 @@ function render() {
     + `<span class="muted small" style="align-self:center">（書類単位の件数。案件数：${S.cases.size.toLocaleString()}）</span>`;
   // 一覧
   visibleCases = [...S.cases.values()].filter(caseMatches).sort((a, b) => b.d.localeCompare(a.d, 'ja', { numeric: true }));
+  renderCyBar();
   const LIMIT = 1500;
   $('#tblCases tbody').innerHTML = visibleCases.slice(0, LIMIT).map(c => {
     const r = c.row; const sel = DOC_TYPES.flatMap(t => pickDocs(c, t));
