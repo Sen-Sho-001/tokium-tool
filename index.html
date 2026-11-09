@@ -1554,7 +1554,7 @@ function buildPrompt() {
 【対象】
 ${lines.join('\n')}
 
-【最後に】処理できなかった件も含めて【対象】の全件について、1件1行で次の形式で結果をまとめて出力してください（ヘッダー不要。値にカンマを含む場合は半角の " で囲む（全角の ” “ は使わない）。file_name は指定のファイル名をそのまま。status は「登録済」「既存」「要確認」のいずれか。note も日本語）：
+【最後に】処理できなかった件も含めて【対象】の全件について、1件1行で次の形式で結果をまとめて出力してください（ヘッダー不要。値にカンマを含む場合は半角の " で囲む（全角の ” “ は使わない）。doc_type は「見積書」「注文書」「納品書」「請求書」のいずれか（TOKIUMの書類種別名ではなく【対象】の [ ] 内の語）。file_name は指定のファイル名を1文字も変えずそのまま（「_」や空白も省かない）。status は「登録済」「既存」「要確認」のいずれか。note も日本語）：
 RESULT,<doc_type>,<d_number>,<quote_no>,<file_name>,<partner>,<doc_date>,<amount>,<status>,<note>`;
 }
 async function copyText(t) {
@@ -1643,6 +1643,7 @@ $('#btnParse').onclick = () => {
     const cells = parseCSV(line)[0].slice(1);
     const r = Object.fromEntries(RES_COLS.map((c, i) => [c, (cells[i] ?? '').trim()]));
     r.file_name = r.file_name.replace(/^["'「]+|["'」]+$/g, '').trim();
+    r.doc_type = DOC_TYPES.find(t => r.doc_type.startsWith(t)) || r.doc_type;  // Claudeが「見積書_自己」のようにTOKIUMの種別名で返すことがある
     // ファイル名で書類を特定（同名が複数あれば D番号で絞る）。全角半角・空白の違いは無視して比べる
     const fkey = s => nfkc(s).replace(/\s+/g, '');
     let cand = S.docs.filter(d => d.name === r.file_name);
@@ -1651,7 +1652,8 @@ $('#btnParse').onclick = () => {
     // ファイル名が一致しない（Claudeが「_」を落とす等）→ 同じD番号・書類種別で、見積No（またはPO番号）を名前に含むPDFが1つだけならそれ
     let fuzzy = '';
     if (!cand.length && r.d_number) {
-      const D = r.d_number.toUpperCase(), q = nfkc(r.quote_no || ''), po = (nfkc(r.file_name).match(/PO#([^_\s]+)/i) || [])[1] || '';
+      // 見積Noは返ってきたファイル名の枝番つき（M13509-1）を優先する。quote_no は枝番なしのことがあり、旧版のファイルに当たってしまう
+      const D = r.d_number.toUpperCase(), q = (nfkc(r.file_name).match(/M\d{4,5}(?:-\d+)?(?!\d)/) || [nfkc(r.quote_no || '')])[0], po = (nfkc(r.file_name).match(/PO#([^_\s]+)/i) || [])[1] || '';
       const near = S.docs.filter(d => d.hasPdf && d.type === r.doc_type && d.dList.includes(D) && /\.pdf$/i.test(d.name));
       const byKey = near.filter(d => (q && fkey(d.name).includes(fkey(q) + '_')) || (po && fkey(d.name).includes('PO#' + po)));
       cand = byKey.length === 1 ? byKey : near.length === 1 ? near : [];
