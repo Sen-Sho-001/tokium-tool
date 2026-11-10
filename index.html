@@ -656,12 +656,13 @@ async function cyWrite(dry, rows = (S.cyRows || []).filter(x => S.cySel.has(cyDo
     }
     S.cyResults = Object.fromEntries((st.results || []).map(r => [r.key, r]));
     msg((st.state === 'done' ? '✓ ' : '✗ ') + st.message);
-    if (!dry && (st.results || []).some(r => r.state === 'done')) {  // 書き換え後のDB30・DB24を読み直す（常駐プログラムが取り直し済み）
-      const res = await fetch(L + '/db30'); const name = new TextDecoder().decode(new Uint8Array((res.headers.get('X-File-Name') || '').match(/../g).map(h => parseInt(h, 16))));
-      const { headers, data } = toObjects(parseCSV(decodeCSV(await res.arrayBuffer())));
-      S.db30Ver = `${name}|local ${res.headers.get('X-File-Mtime')}`; setDb30(headers, data, `このPC ${name}（書き換え後）`);
-      const r24 = await fetch(L + '/db24'); if (r24.ok) setDb24(toObjects(parseCSV(decodeCSV(await r24.arrayBuffer()))).data, 'このPC db24（書き換え後）', `local ${r24.headers.get('X-File-Mtime')}`);
+    if (!dry && (st.results || []).some(r => r.state === 'done' || r.state === 'already')) {
+      // DB30・DB24は取り直さない（4分半かかるため）。サイボウズに書いた値を、手元のDB30・DB24にも入れて表示を合わせる
+      // （次の定期更新か「↻ サイボウズ」で、サイボウズから取り直した値に置き換わる）
+      const ok = new Set((st.results || []).filter(r => r.state === 'done' || r.state === 'already').map(r => r.key));
+      for (const { c, t, s } of rows) if (ok.has(cyDoneKey(s))) { if (t === '注文書') c.row[CONFIG.db30.po] = cyValue(s); else if (S.db24) S.db24.byM[s.q] = cyValue(s); }
       S.cySel.clear(); S.cyListSel.clear(); rebuild(); await cySyncLog();
+      msg((st.state === 'done' ? '✓ ' : '✗ ') + st.message + '（DB30・DB24の取り直しは、定期更新か「↻ サイボウズ」で）');
     }
     render();
   } catch (e) { msg('✗ ' + e.message); }
