@@ -635,7 +635,12 @@ async function cyWrite(dry, rows = (S.cyRows || []).filter(x => S.cySel.has(cyDo
     return { d: c.d, did: t === '見積書' ? 24 : 30, q: s.q, key: cyDoneKey(s), old_url: ou.trim(), old_name: on.join(',').trim(), new_url: nu, new_name: nn.join(',') };
   });
   if (!items.length) { msg('書き込む書類にチェックを入れてください'); return; }
-  if (!dry && !confirm(`${items.length}件の書類について、サイボウズのリンク欄（注文書＝仕入販売管理のPO欄、見積書＝見積管理のView欄）をTOKIUMのURLに書き換えます。\n元の値と一致するレコードだけを書き換え、元の値は管理者PCの記録に残します。よろしいですか？`)) return;
+  // 確認画面：書類の種類ごとに書き換える欄と、対象の D番号・見積No・顧客名を並べる（多いときは先頭20件）
+  const kinds = [['見積書', '見積管理のView欄'], ['注文書', '仕入販売管理のPO欄']].filter(([t]) => rows.some(x => x.t === t))
+    .map(([t, f]) => `${t} ${rows.filter(x => x.t === t).length}件（${f}）`).join('、');
+  const lines = rows.slice(0, 20).map(({ c, t, s }) => `・${c.d}${t === '見積書' ? ` ${s.q}` : ''}　${t}　${c.row[CONFIG.db30.customer] || ''}`);
+  if (rows.length > 20) lines.push(`…ほか${rows.length - 20}件`);
+  if (!dry && !confirm(`次の${items.length}件について、サイボウズのリンクをTOKIUMのURLに書き換えます。\n${kinds}\n\n${lines.join('\n')}\n\n元の値と一致するレコードだけを書き換え、元の値は管理者PCの記録に残します。よろしいですか？`)) return;
   const L = 'http://127.0.0.1:8767/cybozu';
   try { if (!(await fetch(L + '/status', { signal: AbortSignal.timeout(2000) })).ok) throw 0; }
   catch { msg('✗ 自動の書き込みは管理者PCでツールを開いたときだけ使えます'); return; }
