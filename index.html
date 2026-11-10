@@ -562,6 +562,9 @@ function cyLink(c, t) {
 function cyStale(c, t) {
   const l = cyLink(c, t); if (!l || CONFIG.tokiumLinkRe.test(l.raw)) return null;
   const tk = tkList(c.d, t); if (!tk.length) return null;
+  // ツールで書き換え済み（処理ログに記録あり）で、DB30・DB24がまだ書き換え前のもの → 書き換え済みとして扱う（次のDB30更新で正式に反映される）
+  const cw = S.cyWritten?.get(`${c.d}|${t}`), nm = l.raw.split(',').slice(1).join(',').trim();
+  if (cw && normName(cw.file_name) === normName(nm)) return null;
   return { ...l, tk, state: !l.raw ? '空欄' : /^https?:/.test(l.raw) ? 'SharePointのまま' : 'URL以外' };
 }
 const CY_STALE = 'サイボウズ未更新';
