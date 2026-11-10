@@ -661,11 +661,25 @@ async function cyWrite(dry, rows = (S.cyRows || []).filter(x => S.cySel.has(cyDo
       const { headers, data } = toObjects(parseCSV(decodeCSV(await res.arrayBuffer())));
       S.db30Ver = `${name}|local ${res.headers.get('X-File-Mtime')}`; setDb30(headers, data, `このPC ${name}（書き換え後）`);
       const r24 = await fetch(L + '/db24'); if (r24.ok) setDb24(toObjects(parseCSV(decodeCSV(await r24.arrayBuffer()))).data, 'このPC db24（書き換え後）', `local ${r24.headers.get('X-File-Mtime')}`);
-      S.cySel.clear(); S.cyListSel.clear(); rebuild();
+      S.cySel.clear(); S.cyListSel.clear(); rebuild(); await cySyncLog();
     }
     render();
   } catch (e) { msg('✗ ' + e.message); }
   finally { CY_BTNS.forEach(b => { $(b).disabled = false; }); }
+}
+/* 管理者PCの書き換え記録（auto\cybozu_link_update_log*.csv）を、共有の処理ログに取り込む（まだ無い行だけ）。
+   管理者PCでツールを開いたときだけ動く。ほかの人は共有ログ経由で一覧の「サイボウズ書換済」が見える */
+async function cySyncLog() {
+  let rows;
+  try { rows = (await (await fetch('http://127.0.0.1:8767/cybozu/linklog', { signal: AbortSignal.timeout(3000) })).json()).rows || []; } catch { return 0; }
+  const have = new Set(S.log.filter(r => r.match_method === 'cy_link').map(r => r.note));
+  const add = rows.map(r => {
+    const t = +r.did === 24 ? '見積書' : '注文書', c = S.cases.get((r.d || '').toUpperCase());
+    return { doc_type: t, d_number: r.d, quote_no: t === '見積書' ? quoteKey(r.new_name) : '', file_name: r.new_name, drive_item_id: '', match_method: 'cy_link', status: '',
+      partner: c?.row[CONFIG.db30.customer] || '', note: `サイボウズの${t === '見積書' ? '見積管理View欄' : '仕入販売管理PO欄'}をTOKIUMのURLに書換（レコード${r.rid}・書換日時 ${r.at}）` };
+  }).filter(r => !have.has(r.note));
+  if (add.length) { appendLog(add); rebuild(); }
+  return add.length;
 }
 const CY_BTNS = ['#btnCyWrite', '#btnCyDry', '#btnCyListWrite', '#btnCyListDry'];
 const cyListRun = dry => {
@@ -882,10 +896,13 @@ function rebuild() {
     .forEach(r => { const d = ((r.d_number || '').toUpperCase().match(/D\d{4}/) || [''])[0]; d ? manual.set(r.drive_item_id, d) : manual.delete(r.drive_item_id); });  // 解除＝自動の紐づけに戻す
   // 金額違いの確認済み（担当者が確認してOKにしたもの）：D番号|書類 → 最新の行。ファイル名も記録し、もっと新しいファイルが来たら効かない
   S.amountOk = new Map();
+  // ツールでサイボウズのリンクを書き換えた記録（D番号|書類 → いちばん新しい行）。一覧・詳細に「サイボウズ書換済」と出す
+  S.cyWritten = new Map();
+  for (const r of S.log) if (r.match_method === 'cy_link') { const k = `${(r.d_number || '').toUpperCase()}|${r.doc_type}`; if (!S.cyWritten.has(k) || S.cyWritten.get(k).logged_at < r.logged_at) S.cyWritten.set(k, r); }
   [...S.log].filter(r => r.match_method === 'amount_ok').sort((a, b) => a.logged_at < b.logged_at ? -1 : 1)
     .forEach(r => { const k = `${(r.d_number || '').toUpperCase()}|${r.doc_type}`; r.note === '（取消）' ? S.amountOk.delete(k) : S.amountOk.set(k, r); });
   for (const r of S.log) {
-    if (r.match_method === 'manual' || r.match_method === 'amount_ok') continue;
+    if (r.match_method === 'manual' || r.match_method === 'amount_ok' || r.match_method === 'cy_link') continue;
     const ds = (r.d_number || '').toUpperCase().match(/D\d{4}/g) || [];
     for (const base of [r.drive_item_id, 'name:' + r.file_name].filter(x => x && x !== 'name:')) {
       if (ds.length) ds.forEach(d => put(`${base}|${d}`, r)); else put(base, r);
@@ -1148,8 +1165,10 @@ function docCell(c, t) {
   const pk = pickDocs(c, t);  // 欄の「登録する」は、ファイルが複数なら日付がいちばん新しいものだけを選ぶ
   const cyS = (t === '見積書' || t === '注文書') && (!$('#flType').value || $('#flType').value === t) && !cyDoneSet().has(cyDoneKey(cyStale(c, t) || {})) ? cyStale(c, t) : null;
   const cyPick = cyS && !cyNoAuto(c, t, cyS) ? `<div><label class="cellPick cyPick" title="サイボウズのリンクをTOKIUMのURLに書き換える対象に入れる（上の紫の帯から実行）"><input type="checkbox" class="cyCell" data-k="${esc(cyDoneKey(cyS))}" ${S.cyListSel.has(cyDoneKey(cyS)) ? 'checked' : ''}>サイボウズ</label></div>` : '';
+  const cw = S.cyWritten?.get(`${c.d}|${t}`);
+  const cyMark = cw ? `<div class="small cyPick" title="${esc(cw.note)}（${esc(cw.user || '')}）">サイボウズ書換済 ${esc((cw.note.match(/書換日時 \d{4}-(\d{2})-(\d{2})/) || []).slice(1).join('/'))}</div>` : '';
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="${pk.length < selDocs.length ? `ファイルが${selDocs.length}件あるので、日付がいちばん新しい「${esc(pk[0].name)}」を登録対象に入れます（ほかを選ぶときは詳細から）` : 'この書類をClaudeへの登録対象に入れる'}"><input type="checkbox" class="selCell" data-t="${t}" ${pk.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
-  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${amNote}${cyNote}${cellPick}${cyPick}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
+  return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${amNote}${cyNote}${cellPick}${cyPick}${cyMark}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
 }
 function updateLoadSummary() {
   const parts = [];
@@ -2229,6 +2248,7 @@ $('#btnScan').onclick = async () => {
     st.textContent = `✓ ${S.db30Name}／書類 ${scan.files.length.toLocaleString()}件（${scan.yearFolders.join('、')}、対象外フォルダ ${scan.skipped}件は読まずにスキップ${scan.errors ? `、⚠読めなかったフォルダ ${scan.errors}件` : ''}）／顧客POリンク ${sh.resolved}/${sh.total}件解決／${Math.round((Date.now() - t0) / 1000)}秒${rulesMsg ? '／' + rulesMsg : ''}`;
     $('#gsProg').textContent = '';
     if (same.length) st.textContent += `／変更なし：${same.join('・')}（キャッシュを使用）`;
+    await cySyncLog();  // 管理者PCなら、サイボウズの書き換え記録を共有ログに取り込む
     $('#loadBox').open = false;  // 読み込みが終わったら畳む（上の1行で状況は見える）
     saveSnapshot();
   } catch (e) { st.className = 'st err'; st.textContent = '✗ ' + e.message; $('#gsProg').textContent = ''; }
