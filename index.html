@@ -1679,7 +1679,9 @@ function buildPrompt() {
     const po = poNoFor(d, c), quote = d.quote || (r && quoteKey(r[C.quote])) || '';
     let s = `${i + 1}. [${d.type}] ${D || 'D番号未特定'} ／ ファイル：${d.name}\n   保存場所：${path}`;
     if (!r) return s + `\n   → 案件が未特定です。PDF内の見積No（M+数字）を読み取って報告の quote_no に入れ、登録はせず status を「要確認」にしてください。取引先フォルダ：${d.customer}`;
-    const title = d.type === '見積書' ? `${quote}_${D}` : `${D}_PO#${po || '（PDFの注文番号）'}`;
+    // 1つの注文書PDFを複数の案件で使う（明細が複数行）ときは、この案件の明細番号を枝番にする（例：D9447_PO#004126099-02）
+    const multiPo = d.type === '注文書' && d.sharedWith?.length > 0;
+    const title = d.type === '見積書' ? `${quote}_${D}` : `${D}_PO#${po || '（PDFの注文番号）'}${multiPo ? '-（明細番号）' : ''}`;
     const memo = `1行目「${title}」／` + (d.type === '納品書' || d.type === '請求書' ? `2行目「品名(枚数)」（例：${r[C.item] || ''}）／3行目` : '2行目') + `「${byLine}」（「」は入れない）`;
     const od = orderDateFor(c);
     const dateHint = { '見積書': od ? `受注日 ${od.date}（${od.src}）。見積書の発行日ではなく受注日で登録する` : `受注日（注文書＝POに記載の注文日をPDFで確認して入力。見積書の発行日ではない）${(() => { const po = c.docs['注文書'].find(x => x.webUrl); const link = po ? po.webUrl : ((c.row[CONFIG.db30.po] || '').split(',')[0].match(/^https?:\/\/\S+/) || [''])[0]; return link ? `\n     POのPDF：${link}` : ''; })()}`,
@@ -1691,7 +1693,10 @@ function buildPrompt() {
    取引先＝取引先コード ${r[C.custNo] || '（不明：取引先名で検索）'} で検索して選択（${r[C.customer]}）
    取引金額＝${fmtYen(r[C.amount])}（税抜・JPY）　※税込 ${fmtYen(r[C.amountTax])}${(ack => ack ? `
    ※金額の違いは担当者が確認済み（理由：${ack.note}）。PDFの金額が指定と違っても、金額の違いだけなら止めずに登録する。取引金額は指定どおり入力し、note に「金額差：PDF ○○円・指定 ${fmtYen(r[C.amount])}円（確認済み）」と書く` : '')(amountAck(D, d.type, d.name) || (d.type === '注文書' && amountAck(D, d.type, (r[C.po] || '').split(',').slice(1).join(','))))}
-   メモ＝${memo}${d.sharedWith?.length ? `\n   ※同じファイルを ${d.sharedWith.join('・')} でも使っていますが、${D} の分として登録してください` : ''}`;
+   メモ＝${memo}${d.sharedWith?.length ? `\n   ※同じファイルを ${d.sharedWith.join('・')} でも使っていますが、${D} の分として登録してください` : ''}${multiPo ? `
+   ※この注文書には複数の案件の明細があります。PDFの明細表から、${D} の明細行（品名＝${nfkc(r[C.item] || '')}、金額＝${fmtYen(r[C.amount])}円）を探し、その行の「明細番号」（01・02 など、PDFの表記のまま）を書類タイトルとメモ1行目の「（明細番号）」に入れる（例：${D}_PO#${po || '注文番号'}-02）。
+     ほかの案件の明細：${d.sharedWith.map(x => { const r2 = S.cases.get(x)?.row; return r2 ? `${x}（${nfkc(r2[C.item] || '')}・${fmtYen(r2[C.amount])}円）` : x; }).join('／')}
+     金額は注文書の合計ではなく、その明細行の金額が指定と一致していればよい。同じ金額の明細が複数あるときは品名（サイズ・BG・DCなど）で見分ける。明細を1つに決められないときは登録せず「要確認」にし、note に候補の明細番号を書く。RESULT の note に「明細番号：02」のように書く` : ''}`;
   });
   return `TOKIUMに、次の書類を1件ずつ登録してください。
 ※返答・途中の報告・確認の質問・最後のまとめは、すべて日本語で書いてください（RESULT行の形式はそのまま）。
