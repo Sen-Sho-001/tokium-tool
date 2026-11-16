@@ -246,6 +246,7 @@ details summary{cursor:pointer}
   <div class="tab" data-tab="import">結果の取り込み</div>
   <div class="tab" data-tab="log">処理ログ<span class="cnt" id="cntLog">0</span></div>
   <div class="tab" data-tab="cyupd">サイボウズ更新<span class="cnt" id="cntCy">0</span></div>
+  <div class="tab" data-tab="pofill">PO欄の記入<span class="cnt" id="cntPoFill">0</span></div>
   <div class="tab" data-tab="rules">取引先ルール<span class="cnt" id="cntRules">0</span></div>
 </div>
 
@@ -295,6 +296,13 @@ details summary{cursor:pointer}
     <span class="small" id="cyWriteMsg"></span>
   </div>
   <table id="tblCy"><thead><tr><th><input type="checkbox" id="cySelAll" title="表示中の、自動で書き込める書類をすべて選ぶ"></th><th>D番号</th><th>書類</th><th>得意先</th><th>今の値</th><th>書き換え後の値</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
+<section id="pane-pofill" class="hidden panel">
+  <div class="small muted" style="margin-bottom:6px">仕入販売管理のPO欄が空欄の案件に、顧客フォルダの注文書から候補を出しています（同じ顧客・ファイル名の金額が一致・日付が近い順）。
+    「開く」で中身を確認して、問題なければ「この注文書をPO欄に書き込む」を押してください（管理者PCのみ）。書き込むのはPO欄が今も空欄のときだけです。</div>
+  <div class="small" id="poFillMsg" style="margin-bottom:6px"></div>
+  <table id="tblPoFill"><thead><tr><th>D番号</th><th>得意先／品名</th><th>金額（税抜）</th><th>納品日</th><th>注文書の候補</th></tr></thead><tbody></tbody></table>
 </section>
 
 <section id="pane-rules" class="hidden panel">
@@ -671,6 +679,60 @@ async function cyWrite(dry, rows = (S.cyRows || []).filter(x => S.cySel.has(cyDo
   } catch (e) { msg('✗ ' + e.message); }
   finally { CY_BTNS.forEach(b => { $(b).disabled = false; }); }
 }
+/* PO欄が空欄の案件に対する、顧客フォルダの注文書の候補（どの案件にも紐づいていないPDF）。
+   必須：同じ顧客のフォルダ・ファイル名の金額が仕入販売管理の金額（税抜か税込）と一致。
+   日付（納品日の180日前〜7日後）と、品名の型番がファイル名にあるかで並べる */
+function poFileCandidates(c) {
+  if (c.poState !== 'empty' || S.poFilled?.has(`${c.d}|注文書`)) return [];
+  const r = c.row, num = s => +String(s || '').replace(/[^\d]/g, ''), amt = num(r[CONFIG.db30.amount]), tax = num(r[CONFIG.db30.amountTax]);
+  if (!amt) return [];
+  const toDate = n => n ? new Date(String(n).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) : null;
+  const dl = (r[CONFIG.db30.deliveryDate] || '').replace(/\//g, '-'), dlv = dl ? new Date(dl) : null;
+  const models = [...new Set((nfkc(r[CONFIG.db30.item] || '').toUpperCase().match(/[A-Z]{2,}\d{2,}[A-Z]*/g) || []))];
+  return S.docs.filter(d => d.type === '注文書' && !d.dList.length && d.hasPdf && d.customer && folderMatchesCustomer(d.customer, r[CONFIG.db30.customer]))
+    .map(d => {
+      // 金額は「_」区切りの数字に加え、区切りが無いもの（…_831000PO#…）も拾う（先頭の日付は除く）
+      const a = [...nameAmounts(d.name), ...(nfkc(d.name).replace(/^\d{6,8}_/, '').match(/\d{4,}/g) || []).map(Number)];
+      if (!a.some(x => x === amt || x === tax)) return null;
+      const fd = toDate(docDate(d.name)), days = fd && dlv ? Math.round((dlv - fd) / 864e5) : null;
+      if (days !== null && (days < -7 || days > 180)) return null;
+      const hit = models.filter(m => nfkc(d.name).toUpperCase().includes(m));
+      return { d, days, hit, score: hit.length * 10 - (days === null ? 50 : Math.abs(days) / 10) };
+    }).filter(Boolean).sort((x, y) => y.score - x.score);
+}
+function renderPoFill() {
+  const list = visibleCases.length || S.cases.size ? [...S.cases.values()].filter(c => poFileCandidates(c).length).sort((a, b) => b.d.localeCompare(a.d, 'ja', { numeric: true })) : [];
+  $('#cntPoFill').textContent = list.length;
+  $('#tblPoFill tbody').innerHTML = list.map(c => {
+    const r = c.row;
+    return `<tr><td><a href="#" class="cyD" data-d="${esc(c.d)}">${esc(c.d)}</a></td><td class="small">${esc(r[CONFIG.db30.customer])}<div class="muted">${esc((r[CONFIG.db30.item] || '').slice(0, 40))}</div></td>
+      <td class="num">${fmtYen(r[CONFIG.db30.amount])}</td><td class="small">${esc(r[CONFIG.db30.deliveryDate])}</td>
+      <td class="small">${poFileCandidates(c).map(({ d, days, hit }) => `<div style="margin-bottom:4px"><span style="word-break:break-all">${esc(d.name)}</span>
+        <div class="muted">${days === null ? '' : `納品日の${days >= 0 ? days + '日前' : -days + '日後'}`}${hit.length ? `・型番一致 ${esc(hit.join(' '))}` : ''}</div>
+        ${d.webUrl ? `<a class="btn small" href="${esc(d.webUrl)}" target="_blank" rel="noopener">開く</a> <button class="small primary poFill" data-d="${esc(c.d)}" data-k="${esc(d.key)}">この注文書をPO欄に書き込む</button>` : '<span class="muted">（SharePointに接続すると開けます）</span>'}</div>`).join('')}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="muted">PO欄が空欄で、注文書の候補がある案件はありません</td></tr>';
+}
+/* 空欄のPO欄に、確認した注文書のSharePoint URLを書き込む（管理者PCの常駐プログラム経由）。紐づけも処理ログに残す */
+async function poFill(c, doc) {
+  const msg = t => { $('#poFillMsg').textContent = t; };
+  const name = doc.name.replace(/\.pdf$/i, '');
+  if (!confirm(`${c.d}（${c.row[CONFIG.db30.customer]}）の仕入販売管理のPO欄に、次の注文書を書き込みます。\n\n${doc.name}\n\nPO欄が今も空欄の場合だけ書き込みます。よろしいですか？`)) return;
+  const L = 'http://127.0.0.1:8767/cybozu';
+  try { if (!(await fetch(L + '/status', { signal: AbortSignal.timeout(2000) })).ok) throw 0; }
+  catch { msg('✗ 書き込みは管理者PCでツールを開いたときだけ使えます'); return; }
+  try {
+    const item = { d: c.d, did: 30, q: c.d, key: 'pofill|' + c.d, old_url: '', old_name: '', new_url: doc.webUrl, new_name: name };
+    let st = await (await fetch(L + '/linkupdate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: [item] }) })).json();
+    if (st.state === 'busy' || st.error) { msg('✗ ' + (st.message || st.error)); return; }
+    while (st.state === 'running') { await sleep(3000); st = await (await fetch(L + '/linkstatus')).json(); msg('⏳ ' + st.message); }
+    const res = (st.results || [])[0];
+    if (!res || !res.ok) { msg('✗ ' + (res?.message || st.message)); return; }
+    c.row[CONFIG.db30.po] = doc.webUrl + ',' + name;  // DB30を取り直すまでの表示用
+    appendLog([{ doc_type: '注文書', d_number: c.d, file_name: doc.name, drive_item_id: doc.id, match_method: 'manual', partner: c.row[CONFIG.db30.customer], status: '', note: '空欄だったPO欄にこの注文書を記入したため紐づけ' }]);
+    await cySyncLog(); rebuild();
+    msg(`✓ ${c.d} のPO欄に書き込みました（${res.message}）`);
+  } catch (e) { msg('✗ ' + e.message); }
+}
 /* 管理者PCの書き換え記録（auto\cybozu_link_update_log*.csv）を、共有の処理ログに取り込む（まだ無い行だけ）。
    管理者PCでツールを開いたときだけ動く。ほかの人は共有ログ経由で一覧の「サイボウズ書換済」が見える */
 async function cySyncLog() {
@@ -680,7 +742,9 @@ async function cySyncLog() {
   const add = rows.map(r => {
     const t = +r.did === 24 ? '見積書' : '注文書', c = S.cases.get((r.d || '').toUpperCase());
     return { doc_type: t, d_number: r.d, quote_no: t === '見積書' ? quoteKey(r.new_name) : '', file_name: r.new_name, drive_item_id: '', match_method: 'cy_link', status: '',
-      partner: c?.row[CONFIG.db30.customer] || '', note: `サイボウズの${t === '見積書' ? '見積管理View欄' : '仕入販売管理PO欄'}をTOKIUMのURLに書換（レコード${r.rid}・書換日時 ${r.at}）` };
+      partner: c?.row[CONFIG.db30.customer] || '', note: /^https:\/\/secure\.keihi\.com\//.test(r.new_url || '')
+        ? `サイボウズの${t === '見積書' ? '見積管理View欄' : '仕入販売管理PO欄'}をTOKIUMのURLに書換（レコード${r.rid}・書換日時 ${r.at}）`
+        : `サイボウズの仕入販売管理PO欄に注文書のURLを記入（レコード${r.rid}・書換日時 ${r.at}）` };
   }).filter(r => !have.has(r.note));
   if (add.length) { appendLog(add); rebuild(); }
   return add.length;
@@ -699,6 +763,11 @@ $('#btnCyWrite').onclick = () => cyWrite(false);
 $('#btnCyDry').onclick = () => cyWrite(true);
 $('#cySelAll').onchange = e => { for (const x of S.cyRows || []) if (!cyNoAuto(x.c, x.t, x.s)) e.target.checked ? S.cySel.add(cyDoneKey(x.s)) : S.cySel.delete(cyDoneKey(x.s)); renderCy(); };
 $('#cyType').onchange = $('#cyHideDone').onchange = renderCy;
+$('#tblPoFill').onclick = e => {
+  const a = e.target.closest('.cyD'); if (a) { e.preventDefault(); openDrawer(S.cases.get(a.dataset.d)); return; }
+  const b = e.target.closest('.poFill'); if (!b) return;
+  const c = S.cases.get(b.dataset.d), doc = S.docs.find(x => x.key === b.dataset.k); if (c && doc) poFill(c, doc);
+};
 $('#tblCy').onclick = async e => {
   const a = e.target.closest('.cyD'); if (a) { e.preventDefault(); openDrawer(S.cases.get(a.dataset.d)); return; }
   const g = e.target.closest('.cyGo');
@@ -882,7 +951,14 @@ function rebuild() {
     for (const k of poNoKeys(f.name)) {
       const ds = (poKeyToD.get(k) || []).filter(d => folderMatchesCustomer(f.customer, S.cases.get(d).row[C.customer]));
       const names = new Set(ds.map(d => normName((S.cases.get(d).row[C.po] || '').split(',').slice(1).join(','))));
-      if (ds.length && names.size === 1) return [...new Set(ds)];
+      if (!ds.length || names.size !== 1) continue;
+      // 1つのPOが複数案件に分かれる（PO番号が同じで金額が違う注文書が並ぶ）とき：このファイルの金額が、
+      // PO欄が空欄の別の案件（同じ顧客）の金額と一致するなら、そちらの注文書なので紐づけない
+      const num = s => +String(s || '').replace(/[^\d]/g, ''), fa = nameAmounts(f.name);
+      const own = ds.some(d => fa.includes(num(S.cases.get(d).row[C.amount])) || fa.includes(num(S.cases.get(d).row[C.amountTax])));
+      if (fa.length && !own && [...S.cases.values()].some(c2 => c2.poState === 'empty' && folderMatchesCustomer(f.customer, c2.row[C.customer])
+        && (fa.includes(num(c2.row[C.amount])) || fa.includes(num(c2.row[C.amountTax]))))) return [];
+      return [...new Set(ds)];
     }
     return [];
   };
@@ -902,7 +978,11 @@ function rebuild() {
   S.amountOk = new Map();
   // ツールでサイボウズのリンクを書き換えた記録（D番号|書類 → いちばん新しい行）。一覧・詳細に「サイボウズ書換済」と出す
   S.cyWritten = new Map();
-  for (const r of S.log) if (r.match_method === 'cy_link') { const k = `${(r.d_number || '').toUpperCase()}|${r.doc_type}`; if (!S.cyWritten.has(k) || S.cyWritten.get(k).logged_at < r.logged_at) S.cyWritten.set(k, r); }
+  S.poFilled = new Map();  // 空欄だったPO欄に、ツールで注文書のURLを記入した記録（D番号 → 行）
+  for (const r of S.log) if (r.match_method === 'cy_link') {
+    const k = `${(r.d_number || '').toUpperCase()}|${r.doc_type}`, m = /PO欄に注文書/.test(r.note) ? S.poFilled : S.cyWritten;
+    if (!m.has(k) || m.get(k).logged_at < r.logged_at) m.set(k, r);
+  }
   [...S.log].filter(r => r.match_method === 'amount_ok').sort((a, b) => a.logged_at < b.logged_at ? -1 : 1)
     .forEach(r => { const k = `${(r.d_number || '').toUpperCase()}|${r.doc_type}`; r.note === '（取消）' ? S.amountOk.delete(k) : S.amountOk.set(k, r); });
   for (const r of S.log) {
@@ -1170,7 +1250,11 @@ function docCell(c, t) {
   const cyS = (t === '見積書' || t === '注文書') && (!$('#flType').value || $('#flType').value === t) && !cyDoneSet().has(cyDoneKey(cyStale(c, t) || {})) ? cyStale(c, t) : null;
   const cyPick = cyS && !cyNoAuto(c, t, cyS) ? `<div><label class="cellPick cyPick" title="サイボウズのリンクをTOKIUMのURLに書き換える対象に入れる（上の紫の帯から実行）"><input type="checkbox" class="cyCell" data-k="${esc(cyDoneKey(cyS))}" ${S.cyListSel.has(cyDoneKey(cyS)) ? 'checked' : ''}>サイボウズ</label></div>` : '';
   const cw = S.cyWritten?.get(`${c.d}|${t}`);
-  const cyMark = cw ? `<div class="small cyPick" title="${esc(cw.note)}（${esc(cw.user || '')}）">サイボウズ書換済 ${esc((cw.note.match(/書換日時 \d{4}-(\d{2})-(\d{2})/) || []).slice(1).join('/'))}</div>` : '';
+  const mmdd = r => (r.note.match(/書換日時 \d{4}-(\d{2})-(\d{2})/) || []).slice(1).join('/');
+  const pf = t === '注文書' && S.poFilled?.get(`${c.d}|注文書`), pc = t === '注文書' && !pf && poFileCandidates(c).length;
+  const cyMark = (cw ? `<div class="small cyPick" title="${esc(cw.note)}（${esc(cw.user || '')}）">サイボウズ書換済 ${esc(mmdd(cw))}</div>` : '')
+    + (pf ? `<div class="small cyPick" title="${esc(pf.note)}（${esc(pf.user || '')}）">PO欄記入済 ${esc(mmdd(pf))}</div>` : '')
+    + (pc ? `<div class="small cyPick" title="仕入販売管理のPO欄が空欄で、顧客フォルダに候補の注文書があります（「サイボウズ更新」タブで確認して書き込み）">PO欄空・候補${pc}件</div>` : '');
   const cellPick = selDocs.length ? `<div><label class="cellPick" title="${pk.length < selDocs.length ? `ファイルが${selDocs.length}件あるので、日付がいちばん新しい「${esc(pk[0].name)}」を登録対象に入れます（ほかを選ぶときは詳細から）` : 'この書類をClaudeへの登録対象に入れる'}"><input type="checkbox" class="selCell" data-t="${t}" ${pk.every(d => S.selected.has(d.key)) ? 'checked' : ''}>登録する</label></div>` : '';
   return `<td class="doc${picked ? ' picked' : ''}" data-t="${t}" title="${esc(t + '：' + st + tip + (shared.length ? `（同じファイルを ${shared.join(',')} でも使用）` : ''))}"><span class="mk s-${st}">${MARK[st] || st}</span>${st === '登録済（Claude）' ? `<div class="sub" title="Claude in Chromeで登録">登録者：${esc(claudeUser())}</div>` : ''}${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${fileNote ? (fileNote[0] === 'ファイル未検出' ? `<div class="sub warn"><a href="#" class="pickFile" data-t="${t}" title="ファイル名の番号違いなどで見つからないとき、ファイルを指定して紐づけます">ファイル未検出 ▸ 指定</a></div>` : `<div class="sub ${fileNote[1]}">${fileNote[0]}</div>`) : ''}${poNote ? `<div class="sub warn">${esc(poNote)}</div>` : ''}${linkNote ? `<div class="sub warn">${esc(linkNote)}</div>` : ''}${nrNote === 'Kintone' ? '<div class="sub" title="Kintoneの送付資料にチェックなし">Kintone</div>' : ''}${revNote ? `<div class="sub warn">反対種別で登録あり</div><div class="sub ${ds.some(d => d.hasPdf) ? 'ok' : 'warn'}">${ds.some(d => d.hasPdf) ? 'ファイルあり' : 'ファイル未検出'}</div>` : ''}${amNote}${cyNote}${cellPick}${cyPick}${cyMark}${ds.filter(d => S.selected.has(d.key)).length > 1 ? `<div class="sub" style="color:#c0003c;font-weight:600" title="同じ書類で2件以上選んでいます。詳細を開いて、使わない方のチェックを外してください">⚠ ${ds.filter(d => S.selected.has(d.key)).length}件選択中</div>` : ''}</td>`;
 }
@@ -1209,7 +1293,7 @@ function renderRules() {
 }
 function render() {
   const C = CONFIG.db30;
-  renderRules(); renderCy();
+  renderRules(); renderCy(); renderPoFill();
   updateLoadSummary();
   // 集計（書類単位）
   const cnt = {}; for (const d of S.docs) if (d.dList.length && !isAltVersion(d)) cnt[d.status] = (cnt[d.status] || 0) + 1;
@@ -1306,7 +1390,7 @@ $('#chips').onclick = e => {
 $('#tabs').onclick = e => { const t = e.target.closest('.tab'); if (t) showTab(t.dataset.tab); };
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
-  ['list', 'unmatched', 'excluded', 'import', 'log', 'cyupd', 'rules'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
+  ['list', 'unmatched', 'excluded', 'import', 'log', 'cyupd', 'pofill', 'rules'].forEach(n => $('#pane-' + n).classList.toggle('hidden', n !== name));
 }
 const docsOfCase = (c, types = $('#flType').value ? [$('#flType').value] : DOC_TYPES) => types.flatMap(t => pickDocs(c, t));
 $('#tblCases').onclick = e => {
