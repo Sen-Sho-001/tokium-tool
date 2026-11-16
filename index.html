@@ -713,8 +713,8 @@ function renderPoFill() {
   }).join('') || '<tr><td colspan="5" class="muted">PO欄が空欄で、注文書の候補がある案件はありません</td></tr>';
 }
 /* 空欄のPO欄に、確認した注文書のSharePoint URLを書き込む（管理者PCの常駐プログラム経由）。紐づけも処理ログに残す */
-async function poFill(c, doc) {
-  const msg = t => { $('#poFillMsg').textContent = t; };
+async function poFill(c, doc, msgId = '#poFillMsg') {
+  const msg = t => { for (const id of new Set([msgId, '#poFillMsg'])) { const el = $(id); if (el) el.textContent = t; } };
   const name = doc.name.replace(/\.pdf$/i, '');
   if (!confirm(`${c.d}（${c.row[CONFIG.db30.customer]}）の仕入販売管理のPO欄に、次の注文書を書き込みます。\n\n${doc.name}\n\nPO欄が今も空欄の場合だけ書き込みます。よろしいですか？`)) return;
   const L = 'http://127.0.0.1:8767/cybozu';
@@ -1542,7 +1542,9 @@ function openDrawer(c) {
     <dt>得意先／担当</dt><dd>${esc(r[C.customer])}　${esc(r[C.contact])}${r[C.endUser] ? `（EU：${esc(r[C.endUser])}）` : ''}</dd>
     <dt>金額</dt><dd>${fmtYen(r[C.amount])}円（税込 ${fmtYen(r[C.amountTax])}円）</dd>
     <dt>納品日／検収日</dt><dd>${esc(r[C.deliveryDate])}／${esc(r[C.salesDate])}</dd><dt>登録者</dt><dd>${esc(r[C.user])}</dd>
-    <dt>DB30 PO欄</dt><dd>${db30Link(r[C.po], /^注文書/, '注文書')}${spOpen(c.docs['注文書'])}</dd>
+    <dt>DB30 PO欄</dt><dd>${db30Link(r[C.po], /^注文書/, '注文書')}${spOpen(c.docs['注文書'])}${poFileCandidates(c).map(({ d, days, hit }) => `<div class="cyBox small"><b>PO欄の候補</b>（同じ顧客・金額が一致${days === null ? '' : `・納品日の${days >= 0 ? days + '日前' : -days + '日後'}`}${hit.length ? `・型番一致 ${esc(hit.join(' '))}` : ''}）
+      <div style="word-break:break-all">${esc(d.name)}</div>
+      ${d.webUrl ? `<a class="btn small" href="${esc(d.webUrl)}" target="_blank" rel="noopener">開く</a> <button class="small primary poFill" data-d="${esc(c.d)}" data-k="${esc(d.key)}">この注文書をPO欄に書き込む</button>` : d.file ? '<button class="small openPoCand" data-k="' + esc(d.key) + '">開く</button>' : '<span class="muted">（SharePointに接続すると開けます）</span>'}</div>`).join('')}<div class="small" id="poFillMsgDw"></div></dd>
     <dt>DB30 納品書・請求書欄</dt><dd>${db30Link(r[C.invoiceLink], /^請求書/, '請求書')}</dd>
     ${(l => l ? `<dt>DB24 見積書View欄</dt><dd>${db30Link(l.raw, /^見積書/, '見積書')}<div class="small muted">${esc(l.q)}</div></dd>` : '')(cyLink(c, '見積書'))}
   </dl>
@@ -1604,6 +1606,13 @@ $('#dwBody').addEventListener('click', e => {
   if (drawerCase) openDrawer(S.cases.get(drawerCase.d));
 });
 $('#dwBody').onclick = e => {
+  const pf = e.target.closest('.poFill, .openPoCand');
+  if (pf) {
+    const doc = S.docs.find(x => x.key === pf.dataset.k); if (!doc) return;
+    if (pf.classList.contains('openPoCand')) return openFile(doc);
+    poFill(S.cases.get(pf.dataset.d), doc, '#poFillMsgDw').then(() => drawerCase && openDrawer(S.cases.get(drawerCase.d)));
+    return;
+  }
   if (e.target.id === 'btnTkSearch') { openTokiumSearch(e.target.dataset.q).then(m => $('#tkSearchMsg').textContent = m); return; }
   const it = e.target.closest('.docitem'); if (!it) return;
   const d = S.docs.find(x => x.key === it.dataset.id);
