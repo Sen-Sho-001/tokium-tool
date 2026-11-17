@@ -1672,6 +1672,11 @@ function buildPrompt() {
   const C = CONFIG.db30, root = $('#rootPath').value.trim().replace(/[\\/]+$/, '');
   const docs = S.docs.filter(d => S.selected.has(d.key));
   const byLine = `Claude登録（担当：${claudeUser()}）`;  // 誰がClaudeで登録したか、TOKIUMのメモに残す
+  const poKeyNorm = s => nfkc(s || '').replace(/\s+/g, '').toUpperCase().replace(/^[A-Z]+(?=\d)/, '');  // 接頭辞（C483692 の C）の有無は同じとみなす。PO番号は同じ顧客の中でだけ比べる
+  const poToDs = new Map();
+  for (const c of S.cases.values()) for (const n of [(c.row[C.po] || '').split(',').slice(1).join(','), ...c.docs['注文書'].map(x => x.name)]) {
+    const k = poKeyNorm(poNoFor({ name: n }, null)); if (k) { const kk = custKey(c.row[C.customer]) + '|' + k; (poToDs.get(kk) || poToDs.set(kk, new Set()).get(kk)).add(c.d); }
+  }
   const lines = docs.map((d, i) => {
     const D = d.dList[0] || '', c = D && S.cases.get(D), r = c && c.row;
     const path = d.webUrl ? `${d.rel}\n   SharePoint：${d.webUrl}` : root ? root + '\\' + d.rel.replace(/\//g, '\\') : d.rel;
@@ -1680,8 +1685,10 @@ function buildPrompt() {
     let s = `${i + 1}. [${d.type}] ${D || 'D番号未特定'} ／ ファイル：${d.name}\n   保存場所：${path}`;
     if (!r) return s + `\n   → 案件が未特定です。PDF内の見積No（M+数字）を読み取って報告の quote_no に入れ、登録はせず status を「要確認」にしてください。取引先フォルダ：${d.customer}`;
     // 1つの注文書PDFを複数の案件で使う（明細が複数行）ときは、この案件の明細番号を枝番にする（例：D9447_PO#004126099-02）
-    const multiPo = d.type === '注文書' && d.sharedWith?.length > 0;
-    const title = d.type === '見積書' ? `${quote}_${D}` : `${D}_PO#${po || '（PDFの注文番号）'}${multiPo ? '-（明細番号）' : ''}`;
+    // 1つのPOが複数のD番号に分かれる（同じPDFを共用、または同じPO番号の注文書が別のD番号にもある）→ PDFの明細番号を2桁の枝番にする
+    const poOthers = d.type === '注文書' ? [...new Set([...(d.sharedWith || []), ...[...(poToDs.get(custKey(r[C.customer]) + '|' + poKeyNorm(po)) || [])].filter(x => x !== D)])] : [];
+    const multiPo = poOthers.length > 0;
+    const title = d.type === '見積書' ? `${quote}_${D}` : multiPo ? `${D}_PO#（PDFの注文番号）-（明細番号2桁）` : `${D}_PO#${po || '（PDFの注文番号）'}`;
     const memo = `1行目「${title}」／` + (d.type === '納品書' || d.type === '請求書' ? `2行目「品名(枚数)」（例：${r[C.item] || ''}）／3行目` : '2行目') + `「${byLine}」（「」は入れない）`;
     const od = orderDateFor(c);
     const dateHint = { '見積書': od ? `受注日 ${od.date}（${od.src}）。見積書の発行日ではなく受注日で登録する` : `受注日（注文書＝POに記載の注文日をPDFで確認して入力。見積書の発行日ではない）${(() => { const po = c.docs['注文書'].find(x => x.webUrl); const link = po ? po.webUrl : ((c.row[CONFIG.db30.po] || '').split(',')[0].match(/^https?:\/\/\S+/) || [''])[0]; return link ? `\n     POのPDF：${link}` : ''; })()}`,
@@ -1694,9 +1701,9 @@ function buildPrompt() {
    取引金額＝${fmtYen(r[C.amount])}（税抜・JPY）　※税込 ${fmtYen(r[C.amountTax])}${(ack => ack ? `
    ※金額の違いは担当者が確認済み（理由：${ack.note}）。PDFの金額が指定と違っても、金額の違いだけなら止めずに登録する。取引金額は指定どおり入力し、note に「金額差：PDF ○○円・指定 ${fmtYen(r[C.amount])}円（確認済み）」と書く` : '')(amountAck(D, d.type, d.name) || (d.type === '注文書' && amountAck(D, d.type, (r[C.po] || '').split(',').slice(1).join(','))))}
    メモ＝${memo}${d.sharedWith?.length ? `\n   ※同じファイルを ${d.sharedWith.join('・')} でも使っていますが、${D} の分として登録してください` : ''}${multiPo ? `
-   ※この注文書には複数の案件の明細があります。PDFの明細表から、${D} の明細行（品名＝${nfkc(r[C.item] || '')}、金額＝${fmtYen(r[C.amount])}円）を探し、その行の「明細番号」（01・02 など、PDFの表記のまま）を書類タイトルとメモ1行目の「（明細番号）」に入れる（例：${D}_PO#${po || '注文番号'}-02）。
-     ほかの案件の明細：${d.sharedWith.map(x => { const r2 = S.cases.get(x)?.row; return r2 ? `${x}（${nfkc(r2[C.item] || '')}・${fmtYen(r2[C.amount])}円）` : x; }).join('／')}
-     金額は注文書の合計ではなく、その明細行の金額が指定と一致していればよい。同じ金額の明細が複数あるときは品名（サイズ・BG・DCなど）で見分ける。明細を1つに決められないときは登録せず「要確認」にし、note に候補の明細番号を書く。RESULT の note に「明細番号：02」のように書く` : ''}`;
+   ※1つのPOが複数のD番号に分かれている。PDFの明細番号を枝番（-01形式）として付けること（手順「注文書の枝番」）。
+     PDFの明細表から ${D} の明細（品名＝${nfkc(r[C.item] || '')}、金額＝${fmtYen(r[C.amount])}円（税抜））を探し、その明細番号を2桁で「（明細番号2桁）」に入れる。注文番号はPDFの表記に合わせる（ファイル名では ${po || '不明'}）。
+     同じPOのほかのD番号：${poOthers.map(x => { const r2 = S.cases.get(x)?.row; return r2 ? `${x}（${nfkc(r2[C.item] || '')}・${fmtYen(r2[C.amount])}円）` : x; }).join('／')}` : ''}`;
   });
   return `TOKIUMに、次の書類を1件ずつ登録してください。
 ※返答・途中の報告・確認の質問・最後のまとめは、すべて日本語で書いてください（RESULT行の形式はそのまま）。
@@ -1721,8 +1728,16 @@ function buildPrompt() {
    ・所属部署：「営業グループ」のまま
    ・ラベル：「未設定」のまま（「承認済」は担当者が確認してから付けるので、付けない）
 5. PDFの内容（取引先・金額・日付・注文番号）が指定の値と食い違うときは、登録せず status を「要確認」にし、note に違いを書く。
+   ・PO番号はPDFの表記を正とする。書類タイトル・メモのPO番号は、PDFに書かれた注文番号に合わせる。ファイル名とPDFの違いが接頭辞の有無だけのとき（例：ファイル名 483692、PDF C483692）は、止めずにPDFの表記で登録し、note に「PO番号はPDFに合わせた（ファイル名 483692→PDF C483692）」と書く。数字そのものが違うときは「要確認」
    ・【対象】に「金額の違いは担当者が確認済み」とある書類は、金額の違いでは止めない（その書類に書いた指示に従う）
    ・ただし日付だけの違いで、差が7日以内なら止めずに登録する。取引日は指定の日付（PDFの日付ではない）で登録し、note に「日付差：PDF 2026/10/13・指定 2026/10/15（2日）」のように書く。8日以上違うときは「要確認」
+【注文書の枝番】【対象】に「1つのPOが複数のD番号に分かれている」とある注文書だけに適用する。
+   ・書類タイトルとメモ1行目のPO番号の後ろに、PDF上の明細番号を2桁の枝番として付ける（例：D9531_PO#C483692-01（明細1）、D9530_PO#C483692-02（明細2））
+   ・明細番号はファイル名や元データにはないので、PDFを見て決める。【対象】で指定した金額（税抜）・品名と一致する明細を探し、その明細番号を使う
+   ・一致する明細を1つに特定できないとき（同じ金額で品名でも見分けられない明細が複数あるなど）は「要確認」にし、note に候補の明細番号を書く
+   ・1つのPOに明細が複数あっても、全部が同じD番号なら枝番は付けない（例：D9547_PO#13468344）。【対象】に上の一文がない注文書には付けない
+   ・取引金額は、そのD番号の明細の金額（税抜）にする（PO合計ではない）。PO合計が指定と違っても、明細の金額が一致していれば止めない
+   ・note には「PO合計○○円のうち明細○○（○○円）」と書く
 6. 問題なければ「登録」を押す。
 7. 登録後、「国税関係書類一覧」でD番号を検索し、一覧の行で 書類種別・書類タイトル・取引日・取引先コード・取引金額・メモ がすべて入っていることを確認する。空欄や違いがあれば行を開いて修正・保存し、もう一度一覧で確認する。確認が終わるまで status を「登録済」にしない
 
