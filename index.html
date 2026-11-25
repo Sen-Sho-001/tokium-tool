@@ -405,7 +405,7 @@ const CONFIG = {
   ],
   // ファイル名からの番号抽出
   dNumberRe: /(?:^|[_\s@】#])D(\d{4})R?(?=[-_.\s]|$)/g,     // 例 _D9412-2026090702_ / _D9208R-… / _D7929.pdf
-  quoteNoRe: /(?:^|[_\s])M(\d{4,5})(?:-\d+)?(?!\d)/,         // 例 _M13584_ / M13352Ｗ260714.pdf / _M12741IPHBM…
+  quoteNoRe: /(?:^|[^A-Za-z0-9])M(\d{4,5})(?:W\d{6})?(?:-\d+)?(?!\d)/,  // 例 _M13584_ / M13352Ｗ260714.pdf / _M12741IPHBM… / 【Quotation】M13722W261112.pdf（前が記号でもよい）
   // DB30の列名
   db30: {
     d: '新 DNo.', quote: '見積No', customer: '得意先名', item: '品名',
@@ -1121,7 +1121,8 @@ const newerSibling = d => d.dList.length === 1 && (S.cases.get(d.dList[0])?.docs
 const docDate = name => { const m = nfkc(name || '').match(/^(?:\([^)]*\))?\s*((?:20)?\d{6})(?!\d)/); return m ? +(m[1].length === 6 ? '20' + m[1] : m[1]) : 0; };
 /* 同じ書類の新旧：同じ見積Noなら枝番（M13511 < M13511-1 < M13511-2）を優先、それ以外はファイル名の日付。
    ファイル名の日付の打ち間違い（例：202601022）があっても、枝番で新しい方を選べるように。負なら a の方が新しい */
-const quoteBranch = name => { const m = nfkc(name || '').match(/(?:^|[_\s])M(\d{4,5})(?:-(\d+))?(?!\d)/); return m ? { q: m[1], b: +(m[2] || 0) } : null; };
+// M13697W261105-1 の -1 も枝番として読む
+const quoteBranch = name => { const m = nfkc(name || '').match(/(?:^|[^A-Za-z0-9])M(\d{4,5})(?:W\d{6})?(?:-(\d+))?(?!\d)/); return m ? { q: m[1], b: +(m[2] || 0) } : null; };
 const rankCmp = (a, b) => { const qa = quoteBranch(a.name), qb = quoteBranch(b.name);
   return qa && qb && qa.q === qb.q && qa.b !== qb.b ? qb.b - qa.b : docDate(b.name) - docDate(a.name); };
 const newestFirst = (a, b) => rankCmp(a, b) || b.name.localeCompare(a.name);
